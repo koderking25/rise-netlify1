@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin/>
 <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<meta name="description" content="RISE matches Canadian students aged 14-18 with volunteer opportunities that fit their talents. Track your 40 hours. Turn talent into impact."/>
+<meta name="description" content="Born in Canada. Reaching the world. RISE matches young people aged 14-18 to real volunteer roles that need their specific talents — locally or anywhere in the world."/>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 </head>
@@ -251,13 +251,24 @@ if (typeof window !== "undefined" && !window.riseCloud) {
       }
     });
     async function authPost(path, body) {
-      const r = await fetch(SUPA_URL + path, {
-        method: "POST",
-        headers: H(),
-        body: JSON.stringify(body)
-      });
+      let r;
+      try {
+        r = await fetch(SUPA_URL + path, {
+          method: "POST",
+          headers: H(),
+          body: JSON.stringify(body)
+        });
+      } catch (netErr) {
+        // fetch() throwing = network/CORS/DNS/paused-project. Give an actionable message.
+        throw new Error("Couldn't reach the sign-in server. This usually means the database is paused (free Supabase projects pause after ~1 week idle) or this site's URL isn't allowed in Supabase. Open your Supabase dashboard to resume the project, and add this site under Authentication -> URL Configuration.");
+      }
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.msg || data.error_description || data.message || "Sign-in failed - check your details.");
+      if (!r.ok) {
+        const msg = data.msg || data.error_description || data.message || data.error || "";
+        if (r.status === 422 && /already/i.test(msg)) throw new Error("That email already has an account - try logging in instead.");
+        if (r.status === 400 && /email/i.test(msg) && /confirm/i.test(msg)) throw new Error("Check your email to confirm your account, then log in.");
+        throw new Error(msg || "Sign-in failed (error " + r.status + "). Please try again.");
+      }
       return data;
     }
     return {
@@ -279,23 +290,25 @@ if (typeof window !== "undefined" && !window.riseCloud) {
         }
 
         // Standalone: Google via Supabase's OAuth in a popup (iframe-proof).
-        // Requires Google credentials in Supabase → Auth → Providers → Google.
+        // Requires Google credentials in Supabase -> Auth -> Providers -> Google.
         const redirect = window.location.origin + window.location.pathname;
         const url = SUPA_URL + "/auth/v1/authorize?provider=google&redirect_to=" + encodeURIComponent(redirect);
-        // Quick preflight: catches "provider not enabled" with a helpful message
+        // Preflight: verify the provider is actually enabled BEFORE opening a window,
+        // so users never land on a broken Supabase error page.
         try {
           const pre = await fetch(url, {
             method: "GET",
             redirect: "manual"
           });
-          if (pre.status === 400) {
-            const d = await pre.json().catch(() => ({}));
-            if ((d.msg || "").includes("OAuth secret") || (d.error_code || "").includes("validation")) {
-              throw new Error("Google isn't configured yet for standalone hosting. Add Google credentials in Supabase → Authentication → Providers → Google (5-10 min, one time) - or sign in with email, which works right now.");
-            }
+          // A working provider returns an opaque redirect (status 0) or 302/303.
+          // A 400/404/500 with JSON means Google isn't set up.
+          if (pre.type !== "opaqueredirect" && pre.status >= 400) {
+            throw new Error("Google sign-in isn't set up yet. In Supabase -> Authentication -> Providers, enable Google and add your Google OAuth credentials (one-time, ~10 min). Until then, use email sign-up, which works now.");
           }
         } catch (e) {
-          if (e.message && e.message.includes("Google isn't configured")) throw e;
+          if (e.message && e.message.includes("Google sign-in isn't set up")) throw e;
+          // A thrown fetch here = network/CORS/paused project.
+          throw new Error("Couldn't start Google sign-in - the auth server didn't respond. If your Supabase project is paused, resume it in the dashboard. Otherwise use email sign-up.");
         }
         const w = window.open(url, "rise-google-auth", "width=500,height=650,left=" + Math.max(0, (screen.width - 500) / 2) + ",top=" + Math.max(0, (screen.height - 650) / 2));
         if (!w) {
@@ -1176,14 +1189,62 @@ const LOC_GROUPS = [{
     short: "Iqaluit"
   }]
 }, {
-  prov: "Virtual / Remote",
+  /* Born in Canada, reaching the world. RISE started with Canadian cities and
+     these are the rest of it: regions a student can serve into remotely, or in
+     person if they're living, moving, or travelling there. Kept as regions
+     rather than a 195-country dropdown — a region is what actually changes
+     which organizations exist, and it keeps the search prompt useful. */
+  prov: "Rest of the world",
+  locs: [{
+    id: "usa",
+    label: "United States",
+    short: "the United States"
+  }, {
+    id: "uk-ireland",
+    label: "United Kingdom & Ireland",
+    short: "the UK & Ireland"
+  }, {
+    id: "europe",
+    label: "Europe",
+    short: "Europe"
+  }, {
+    id: "latam",
+    label: "Latin America & the Caribbean",
+    short: "Latin America"
+  }, {
+    id: "africa",
+    label: "Africa",
+    short: "Africa"
+  }, {
+    id: "mena",
+    label: "Middle East & North Africa",
+    short: "the Middle East & North Africa"
+  }, {
+    id: "south-asia",
+    label: "South Asia",
+    short: "South Asia"
+  }, {
+    id: "east-asia",
+    label: "East & Southeast Asia",
+    short: "East & Southeast Asia"
+  }, {
+    id: "oceania",
+    label: "Australia, NZ & the Pacific",
+    short: "Oceania"
+  }]
+}, {
+  prov: "Remote / Anywhere",
   locs: [{
     id: "virtual",
-    label: "Virtual: anywhere in Canada",
-    short: "Virtual"
+    label: "Remote: serve anywhere in the world",
+    short: "Remote"
   }]
 }];
 const ALL_LOCS = LOC_GROUPS.flatMap(g => g.locs);
+// Canadian entries are everything before the two global groups — used to tell
+// the search engines whether to look for a local org or an international one.
+const GLOBAL_LOC_IDS = new Set(LOC_GROUPS.filter(g => /Rest of the world|Remote/.test(g.prov)).flatMap(g => g.locs.map(l => l.id)));
+const isGlobalLoc = id => GLOBAL_LOC_IDS.has(id);
 const TALENTS = [{
   id: "music",
   label: "Music & Performance",
@@ -1214,6 +1275,52 @@ const TALENTS = [{
   label: "Community & Tech",
   Icon: Smile,
   desc: "Digital skills, food banks, social care"
+}];
+/* ── Proficiency ──
+   The matching prompts already reason about level ("must not be matched to a
+   role that needs an advanced classical soloist"), but nothing ever collected
+   it, so that instruction had no data behind it. A checkbox says "I play
+   piano"; it can't tell a first-year student apart from someone who's played
+   competitively for eight years, and those two belong in different roles.
+
+   Deliberately four coarse buckets, not a 1-10 slider — a teenager can answer
+   this honestly in one tap, and finer resolution wouldn't survive self-report
+   anyway. */
+const LEVEL_OPTS = [{
+  id: "learning",
+  label: "Still learning",
+  sub: "I'd want someone alongside me"
+}, {
+  id: "solid",
+  label: "Solid",
+  sub: "I can do this unsupervised"
+}, {
+  id: "advanced",
+  label: "Advanced",
+  sub: "Years of it, or competed/performed seriously"
+}, {
+  id: "certified",
+  label: "Certified",
+  sub: "I hold a formal qualification in it"
+}];
+const LEVEL_LABEL = id => (LEVEL_OPTS.find(l => l.id === id) || {}).label || "";
+
+/* ── Languages ──
+   Called out explicitly in the notes, and one of the strongest matching
+   signals there is: a volunteer who speaks Arabic is not interchangeable with
+   one who doesn't when the role is settlement support. Previously this only
+   ever arrived by accident, if a student happened to type it into the free
+   text box. */
+const LANGUAGES = ["English", "French", "Mandarin", "Cantonese", "Punjabi", "Hindi", "Urdu", "Spanish", "Portuguese", "Arabic", "Tagalog", "Vietnamese", "Farsi", "Russian", "Ukrainian", "Korean", "Japanese", "Tamil", "Bengali", "Gujarati", "Polish", "Italian", "German", "Greek", "Somali", "Swahili", "Amharic", "Tigrinya", "Turkish", "Hebrew", "Yiddish", "Cree", "Ojibwe", "Inuktitut", "American Sign Language", "Langue des signes québécoise"];
+const LANG_LEVELS = [{
+  id: "conv",
+  label: "Conversational"
+}, {
+  id: "fluent",
+  label: "Fluent"
+}, {
+  id: "native",
+  label: "Native / first language"
 }];
 const SUPERPOWERS = {
   music: [{
@@ -1277,6 +1384,54 @@ const SUPERPOWERS = {
     label: "Companionship and direct support: I can visit, listen, and assist people one-on-one."
   }]
 };
+/* ── Volunteering Interest Card (VIC) dimensions ──
+   The matcher used to ask what you're good at and roughly when you're free,
+   which is enough to name a category and not enough to name a role. These are
+   the two missing dimensions: how you want to show up, and why you're doing it
+   at all. "Why" in particular is what separates a match from a suggestion —
+   someone who wants to build a skill and someone who wants company belong in
+   very different rooms, even with identical talents. */
+const VTYPE_OPTS = [{
+  id: "homunteer",
+  label: "From home",
+  sub: "Remote work for a cause anywhere in the world"
+}, {
+  id: "local",
+  label: "In my community",
+  sub: "In person, close to where I live"
+}, {
+  id: "voluntourism",
+  label: "Somewhere I'm travelling",
+  sub: "While visiting family or abroad"
+}];
+const WHY_OPTS = [{
+  id: "skill",
+  label: "Get better at something I'm good at",
+  sub: "Real practice, real stakes"
+},
+
+// Doubles as an intake signal: someone here needs a role with people in it.
+{
+  id: "people",
+  label: "Meet people and not be alone in it",
+  sub: "Team-based, social by design"
+}, {
+  id: "cause",
+  label: "A cause I actually care about",
+  sub: "The issue matters more than the task"
+}, {
+  id: "career",
+  label: "See if a career fits before I commit",
+  sub: "Shadowing, clinical or field exposure"
+}, {
+  id: "community",
+  label: "Give back to a community I'm part of",
+  sub: "My neighbourhood, culture, or school"
+}, {
+  id: "record",
+  label: "Build a record I can point to",
+  sub: "Hours, references, a certificate"
+}];
 const TIME_OPTS = [{
   id: "light",
   label: "1–2 hours a week",
@@ -1294,6 +1449,10 @@ const TIME_OPTS = [{
   label: "Events only - flexible dates",
   sub: "Burst commitment, high impact"
 }];
+/* Setting is about the SHAPE of the work — how many people are in the room.
+   Whether the room is physical at all is VTYPE's question, and it used to be
+   asked here too, which let a student answer "In my community" and
+   "Virtual / remote" at the same time. */
 const VIBE_OPTS = [{
   id: "group",
   label: "Group settings",
@@ -1303,9 +1462,9 @@ const VIBE_OPTS = [{
   label: "1-on-1 depth",
   sub: "Individual connections and mentorship"
 }, {
-  id: "virtual",
-  label: "Virtual / remote",
-  sub: "From home, fully online"
+  id: "either",
+  label: "Either works",
+  sub: "I'm not fussy about the format"
 }];
 
 /* Who the student wants to serve. This is one of the strongest matching
@@ -1356,8 +1515,196 @@ const JSON_SHAPE = `[{
 }]
 
 WRITING STYLE: clear, plain, and specific. Write like a knowledgeable advisor, not a marketer. No exclamation marks, no hype words (amazing, incredible, perfect, dream), no forced enthusiasm, no puns or jokes. State facts about the role.`;
+/* ══════════════════════════════════════════════════════════════════
+   AI TRANSPORT LAYER
+
+   Transport priority:
+     1. Server proxy   — keys live in env vars, never in this file
+     2. Anthropic key  — if one is compiled in
+     3. Gemini key     — free-tier fallback
+     4. Keyless Anthropic — works inside the Claude.ai preview
+
+   Every request runs through a concurrency-limited pool with
+   in-flight deduplication and a TTL result cache, so the parallel
+   engines can never stampede a provider or pay twice for the same
+   question. Grounded searches return their web citations alongside
+   the text so results can be shown with real sources.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ⚠ SECURITY — READ THIS.
+   Anything you put in the two constants below ships to the browser and is
+   readable by anyone who views source. The GEMINI_API_KEY below is already
+   public for that reason: rotate it, then move it to your host's environment
+   variables (see netlify/functions/ai-search.js) and set it back to "".
+   With the proxy deployed, the app is fully functional with BOTH constants
+   empty — that is the configuration you want in production. */
+const API_KEY = "";
+/* Empty on purpose — this file is published to a public repository, and any key
+   placed here is readable by anyone and scraped by bots within minutes.
+
+   The app does not need one: live matching runs on Claude Sonnet 5 through the
+   server proxy, where ANTHROPIC_API_KEY is an environment variable the browser
+   never sees. A student on a host with no proxy can still add their own free
+   Gemini key under Settings, which stays in their browser alone. */
+const BUILT_IN_GEMINI_KEY = "";
+
+/* A key the user pasted in Settings wins over the compiled-in one. This exists
+   because the built-in free-tier key is shared by everyone using this build and
+   its daily quota (20 requests) is gone within minutes of the day starting —
+   which is what makes live results silently stop appearing. */
+let GEMINI_API_KEY = (() => {
+  try {
+    return localStorage.getItem("rise_gemini_key") || BUILT_IN_GEMINI_KEY;
+  } catch (e) {
+    return BUILT_IN_GEMINI_KEY;
+  }
+})();
+function setGeminiKey(k) {
+  GEMINI_API_KEY = (k || "").trim() || BUILT_IN_GEMINI_KEY;
+  try {
+    if ((k || "").trim()) localStorage.setItem("rise_gemini_key", k.trim());else localStorage.removeItem("rise_gemini_key");
+  } catch (e) {}
+  AI_HEALTH.state = "unknown";
+  AI_HEALTH.detail = "";
+  aiCache.clear();
+}
+
+/* ── AI health ──
+   The old build swallowed every provider error and quietly served the offline
+   library, so a dead key looked identical to a working one: same results, every
+   search, forever. Nothing here changes what the app does on failure — it still
+   degrades to the library — but the student is now told which one they got. */
+const AI_HEALTH = {
+  state: "unknown",
+  // "unknown" | "live" | "quota" | "auth" | "down"
+  detail: "",
+  at: 0
+};
+const aiHealthListeners = new Set();
+function setAIHealth(state, detail) {
+  if (AI_HEALTH.state === state && AI_HEALTH.detail === detail) return;
+  AI_HEALTH.state = state;
+  AI_HEALTH.detail = detail || "";
+  AI_HEALTH.at = Date.now();
+  aiHealthListeners.forEach(fn => {
+    try {
+      fn(AI_HEALTH);
+    } catch (e) {}
+  });
+}
+function onAIHealth(fn) {
+  aiHealthListeners.add(fn);
+  return () => aiHealthListeners.delete(fn);
+}
+
+// Proxy endpoints, tried in order. Netlify, Cloudflare Pages and Vercel all
+// map to one of these; the first that answers wins and is remembered.
+const PROXY_PATHS = ["/api/ai-search", "/.netlify/functions/ai-search"];
+
+const MODELS = {
+  smart: "claude-sonnet-5",
+  fast: "claude-haiku-4-5-20251001",
+  gemini: "gemini-3.5-flash"
+};
+
+/* ── Gemini model ladder ──
+   Free-tier quota is metered PER MODEL, per project, per day. The old build
+   pinned everything to gemini-2.5-flash, whose allowance is 20 requests a day —
+   so once that single bucket emptied the whole app went dark, even though other
+   models on the very same key still had quota sitting unused.
+
+   These are tried in order. A model that reports an exhausted daily quota is
+   parked until tomorrow and the next one is used instead, which turns one small
+   bucket into several. Ordered best-quality-first, since the cheaper models are
+   only worth reaching for when the better ones are spent. */
+const GEMINI_LADDER = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash"];
+
+/* Google Search grounding is metered separately from generation, and on the
+   free tier it commonly has no allowance at all. Once we've learned that, stop
+   asking for it — otherwise every search-based engine burns a request finding
+   out the same thing again. */
+let GROUNDING_OFF = false;
+
+// model -> timestamp until which we treat it as out of daily quota
+const modelBlocked = Object.create(null);
+function availableModels() {
+  const now = Date.now();
+  const free = GEMINI_LADDER.filter(m => !(modelBlocked[m] > now));
+  // If everything is parked, fall back to the full ladder rather than giving up
+  // outright — a stale block shouldn't outlive a quota window that has reset.
+  return free.length ? free : GEMINI_LADDER.slice();
+}
+function blockModel(model, ms) {
+  modelBlocked[model] = Date.now() + (ms || 60000);
+}
+// A per-day cap won't clear by waiting a minute; park it until just after midnight.
+function msUntilQuotaReset() {
+  const now = new Date();
+  const reset = new Date(now);
+  reset.setHours(24, 5, 0, 0);
+  return Math.max(60000, reset - now);
+}
+
+/* ── Structured output schemas ──
+   These replace "please reply with JSON and nothing else" plus regex
+   scraping. The provider enforces the shape, so a malformed response
+   stops being a class of bug we can hit. */
+const S = (type, extra) => Object.assign({
+  type
+}, extra || {});
+const OPP_SCHEMA = {
+  type: "ARRAY",
+  items: {
+    type: "OBJECT",
+    properties: {
+      title: S("STRING"),
+      org: S("STRING"),
+      role: S("STRING"),
+      whyMatch: S("STRING"),
+      commitment: S("STRING"),
+      firstStep: S("STRING"),
+      requirements: S("STRING"),
+      where: S("STRING"),
+      hours: S("STRING"),
+      link: S("STRING"),
+      contactEmail: S("STRING"),
+      // The exact page this was read on. Without it in the schema the model
+      // physically cannot return one, however hard the prompt asks.
+      sourceUrl: S("STRING"),
+      tags: {
+        type: "ARRAY",
+        items: S("STRING")
+      }
+    },
+    required: ["title", "org", "role", "whyMatch", "commitment", "firstStep", "where", "hours", "link"]
+  }
+};
+const JUDGE_SCHEMA = {
+  type: "ARRAY",
+  items: {
+    type: "OBJECT",
+    properties: {
+      id: S("INTEGER"),
+      capability: S("INTEGER"),
+      population: S("INTEGER"),
+      logistics: S("INTEGER"),
+      credibility: S("INTEGER"),
+      verdict: S("STRING", {
+        enum: ["strong", "good", "weak", "reject"]
+      }),
+      evidence: S("STRING"),
+      concern: S("STRING")
+    },
+    required: ["id", "capability", "population", "logistics", "credibility", "verdict", "evidence"]
+  }
+};
+
+/* ── JSON extraction (still needed for grounded calls) ──
+   Gemini refuses responseSchema when google_search is enabled, so the two
+   discovery engines return text. Everything else is schema-enforced. */
 function extractJSON(data) {
-  const raw = data.content.map(c => c.type === "text" ? c.text : "").filter(Boolean).join("\n");
+  if (data && data.parsed) return data.parsed; // schema-enforced path
+  const raw = (data.content || []).map(c => c.type === "text" ? c.text : "").filter(Boolean).join("\n");
   const txt = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
   const fix = s => {
     try {
@@ -1395,19 +1742,54 @@ function safeAllSettled(promises) {
     reason
   }))));
 }
-/* ── AI SEARCH - direct Anthropic (the method from the best-search version) ──
-   Inside Claude.ai: leave API_KEY empty ("") - calls are proxied automatically
-   and the full triple-engine live search just works.
-   Hosted anywhere else: paste an Anthropic API key (starts with "sk-ant-",
-   from console.anthropic.com) to enable live AI + web-search results.
-   Either way, the built-in library below guarantees instant matches. */
-const API_KEY = "";
 
-/* FREE OPTION - no Anthropic account needed:
-   1. Go to https://aistudio.google.com → "Get API key" (free, no credit card)
-   2. Paste it below. All AI search switches to Google Gemini's free tier,
-      including live Google-Search-grounded results for the web engine. */
-const GEMINI_API_KEY = "AIzaSyC4ysE4yMn7pWpadpFAyWEfP9rXpL8YPiE";
+/* ── Concurrency pool ──
+   Free-tier Gemini rate-limits hard. Four engines firing at once used to
+   burn two of them on 429s; this caps real parallelism and queues the rest. */
+function makePool(limit) {
+  let active = 0;
+  const q = [];
+  const next = () => {
+    if (active >= limit || !q.length) return;
+    active++;
+    const {
+      fn,
+      resolve,
+      reject
+    } = q.shift();
+    fn().then(resolve, reject).finally(() => {
+      active--;
+      next();
+    });
+  };
+  return fn => new Promise((resolve, reject) => {
+    q.push({
+      fn,
+      resolve,
+      reject
+    });
+    next();
+  });
+}
+const aiPool = makePool(3);
+
+/* ── Result cache + in-flight dedupe ──
+   Two engines asking the same question in the same second share one
+   network call. Answers stay warm for 30 minutes. */
+/* Cache lifetime for repeatable, non-search calls (judging, drafting). Live
+   searches never read this — see `fresh` below. Getting that wrong is exactly
+   what made every search return the same three organizations: the answer was
+   being replayed from store instead of looked up again. */
+const AI_TTL = 30 * 60 * 1000;
+const aiCache = new Map(); // key -> { at, value }
+const aiInflight = new Map(); // key -> Promise
+function cacheKeyOf(body) {
+  try {
+    return JSON.stringify([body.model, body.system, body.messages, !!body.tools, body.schema, body.search]);
+  } catch (e) {
+    return String(Math.random());
+  }
+}
 function buildHeaders() {
   const h = {
     "Content-Type": "application/json"
@@ -1419,100 +1801,401 @@ function buildHeaders() {
   }
   return h;
 }
-async function geminiCall(body, timeoutMs = 60000, retries = 2) {
-  // Adapts our Anthropic-shaped requests to Gemini's API (free tier friendly)
-  const prompt = (body.messages || []).map(m => typeof m.content === "string" ? m.content : "").join("\n");
-  const useSearch = !!(body.tools && body.tools.length);
-  const payload = {
-    contents: [{
-      parts: [{
-        text: prompt
-      }]
-    }],
-    generationConfig: {
-      maxOutputTokens: (body.max_tokens || 1200) > 2000 ? 3000 : 1400,
-      temperature: 0.6
+
+/* ── Gemini free-tier rate limiter ──
+   The free tier allows 5 requests per minute per model. The old code fired
+   four discovery engines at once and then a per-card follow-up for each
+   result, so most of a search 429'd and quietly fell back to the offline
+   library — which is the real reason live results felt unreliable.
+
+   This is a token bucket that paces requests to fit, and honours the exact
+   retry delay Google hands back instead of guessing. */
+const GEM_RPM = 5;
+const gemTimes = [];
+let gemBlockedUntil = 0;
+async function geminiSlot() {
+  for (;;) {
+    const now = Date.now();
+    while (gemTimes.length && now - gemTimes[0] > 60000) gemTimes.shift();
+    const waits = [];
+    if (gemBlockedUntil > now) waits.push(gemBlockedUntil - now);
+    if (gemTimes.length >= GEM_RPM) waits.push(60000 - (now - gemTimes[0]) + 250);
+    if (!waits.length) {
+      gemTimes.push(now);
+      return;
     }
-  };
-  if (useSearch) payload.tools = [{
-    google_search: {}
-  }];
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload),
-        signal: ctrl.signal
-      });
-      clearTimeout(timer);
-      if (res.status === 429 || res.status === 503) {
-        if (attempt === retries) throw new Error(`API ${res.status}`);
-        await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
-        continue;
-      }
-      if (!res.ok) throw new Error(`API ${res.status}`);
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("") || "";
-      if (!text) throw new Error("empty");
-      return {
-        content: [{
-          type: "text",
-          text
-        }]
-      }; // same shape our parsers expect
-    } catch (e) {
-      clearTimeout(timer);
-      if (attempt === retries) throw e;
-      await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
-    }
+    await new Promise(r => setTimeout(r, Math.max(...waits)));
   }
 }
-let PROXY_STATE = "untried"; // "untried" | "ok" | "dead"
-async function proxyCall(body, timeoutMs) {
+
+// Google reports the exact wait in the error body — use it rather than guess.
+function retryDelayOf(text) {
+  const m = /"?retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s/.exec(text) || /retry in (\d+(?:\.\d+)?)s/i.exec(text);
+  return m ? Math.ceil(parseFloat(m[1]) * 1000) + 500 : 0;
+}
+
+// True when we're on the constrained free-Gemini path with no proxy and no
+// Anthropic key — the pipeline spends its request budget differently there.
+function isConstrained() {
+  return PROXY_STATE === "dead" && !API_KEY && !!GEMINI_API_KEY;
+}
+
+/* One HTTP round trip to a single named model. Returns a tagged result rather
+   than throwing for quota, so the ladder above it can decide what to do next. */
+async function geminiOnce(model, payload, timeoutMs) {
+  await geminiSlot(); // wait for a free slot in the per-minute budget
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), PROXY_STATE === "ok" ? timeoutMs : 5000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch("/.netlify/functions/ai-search", {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(GEMINI_API_KEY), {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       signal: ctrl.signal
     });
     clearTimeout(timer);
-    if (!res.ok) throw new Error("proxy " + res.status);
-    PROXY_STATE = "ok";
-    return await res.json();
+    if (res.status === 429 || res.status === 503) {
+      const text = await res.text().catch(() => "");
+      return {
+        kind: "quota",
+        status: res.status,
+        // A per-day cap doesn't clear by waiting a few seconds. Anything else does.
+        daily: /PerDay/i.test(text) || /limit: 0\b/.test(text),
+        retryMs: retryDelayOf(text),
+        // Grounding is metered separately from generation, and on the free tier
+        // it is usually the part with no allowance at all.
+        grounding: !!payload.tools && !/generate_content_free_tier_requests/.test(text)
+      };
+    }
+    // 404 here means "this model isn't available to this key", not "bad URL".
+    if (res.status === 404) return {
+      kind: "nomodel"
+    };
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      const text = await res.text().catch(() => "");
+      return {
+        kind: "auth",
+        detail: /expired/i.test(text) ? "expired" : "rejected"
+      };
+    }
+    if (!res.ok) return {
+      kind: "error",
+      status: res.status
+    };
+    const data = await res.json();
+    const cand = data.candidates?.[0];
+    const text = cand?.content?.parts?.map(p => p.text || "").join("") || "";
+    if (!text) return {
+      kind: "empty",
+      finish: cand?.finishReason
+    };
+    // A truncated answer is worse than none when the caller wants JSON: it
+    // parses to nothing and the engine looks like it simply failed. Report it
+    // so the ladder can retry with a bigger budget.
+    if (cand?.finishReason === "MAX_TOKENS") return {
+      kind: "truncated",
+      text,
+      cand
+    };
+    return {
+      kind: "ok",
+      text,
+      cand
+    };
   } catch (e) {
     clearTimeout(timer);
-    if (PROXY_STATE !== "ok") PROXY_STATE = "dead";
-    throw e;
+    return {
+      kind: "error",
+      err: e
+    };
   }
 }
-async function apiCall(body, timeoutMs = 60000, retries = 2) {
-  // Transport priority: if a Gemini key is baked into this build, use it directly —
-  // there's no serverless proxy on static hosts like Cloudflare Pages, so trying it
-  // first would only add a doomed round trip before falling back anyway.
-  // Otherwise: Netlify serverless proxy (key stays on the server) → Anthropic key →
-  // Gemini free key → keyless Anthropic (Claude.ai preview)
-  if (!API_KEY && GEMINI_API_KEY) {
-    try {
-      return await geminiCall(body, timeoutMs, retries);
-    } catch (e) {/* fall through to proxy/direct */}
+
+/* ── Gemini adapter ──
+   Speaks our Anthropic-shaped request, and walks the model ladder so one
+   exhausted daily bucket can't take the whole app down.
+
+   Two output modes:
+     schema mode   — responseSchema enforces the output shape exactly
+     grounded mode — google_search enabled, output is text (Gemini forbids
+                     combining the two), citations returned alongside. */
+async function geminiCall(body, timeoutMs = 60000, retries = 2) {
+  const prompt = (body.messages || []).map(m => typeof m.content === "string" ? m.content : "").join("\n");
+  const wantSearch = !!(body.tools && body.tools.length) || !!body.search;
+  const build = (withSearch, model, extraRoom) => {
+    /* Gemini 3.x models think before they answer, and those thought tokens come
+       out of maxOutputTokens. Passing the caller's budget straight through left
+       46 tokens for the actual answer after 1438 went on reasoning, so every
+       structured response came back truncated and unparseable.
+
+       So: reserve headroom for thinking on top of what the caller asked for,
+       and hold thinking to "low" — enough for the judge to reason properly,
+       bounded enough that it can't eat the response. */
+    const isThinking = /gemini-3/.test(model);
+    const want = body.max_tokens || 1800;
+    const payload = {
+      contents: [{
+        parts: [{
+          text: prompt
+        }]
+      }],
+      generationConfig: {
+        maxOutputTokens: Math.min(isThinking ? want + 2600 + (extraRoom || 0) : want, 16000),
+        temperature: body.temperature != null ? body.temperature : 0.5,
+        topP: 0.95
+      }
+    };
+    if (isThinking) payload.generationConfig.thinkingConfig = {
+      thinkingLevel: "low"
+    };
+    if (body.system) payload.systemInstruction = {
+      parts: [{
+        text: body.system
+      }]
+    };
+    if (withSearch) {
+      payload.tools = [{
+        google_search: {}
+      }];
+    } else if (body.schema) {
+      payload.generationConfig.responseMimeType = "application/json";
+      payload.generationConfig.responseSchema = body.schema;
+    }
+    return payload;
+  };
+  let searchOn = wantSearch && !GROUNDING_OFF;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    for (const model of availableModels()) {
+      const r = await geminiOnce(model, build(searchOn, model, attempt * 3000), timeoutMs);
+      if (r.kind === "ok") {
+        setAIHealth(searchOn || !wantSearch ? "live" : "nosearch", searchOn || !wantSearch ? "" : "Live web search isn't available on this key, so results come from the model's own knowledge.");
+        const out = {
+          content: [{
+            type: "text",
+            text: r.text
+          }],
+          sources: groundingSources(r.cand),
+          model,
+          grounded: searchOn
+        };
+        if (body.schema && !searchOn) {
+          try {
+            out.parsed = JSON.parse(r.text);
+          } catch (e) {}
+        }
+        return out;
+      }
+      if (r.kind === "auth") {
+        setAIHealth("auth", r.detail === "expired" ? "The AI key has expired. Add a new one in Settings." : "The AI key was rejected. Check it in Settings.");
+        throw new Error("AUTH");
+      }
+      if (r.kind === "truncated") {
+        // Retry the same model with more headroom; if we're out of attempts,
+        // take the partial text rather than throwing it away — the tolerant
+        // JSON reader can often still recover whole objects from it.
+        if (attempt < retries) {
+          lastErr = new Error("truncated");
+          continue;
+        }
+        setAIHealth("live", "");
+        return {
+          content: [{
+            type: "text",
+            text: r.text
+          }],
+          sources: groundingSources(r.cand),
+          model,
+          grounded: searchOn,
+          truncated: true
+        };
+      }
+      if (r.kind === "nomodel") {
+        // Not available to this key at all — never try it again this session.
+        blockModel(model, 24 * 3600 * 1000);
+        continue;
+      }
+      if (r.kind === "quota") {
+        // Grounding out of quota is not the model's fault: drop search and let
+        // the same model answer from its own knowledge rather than losing the
+        // engine entirely. Far better than no results.
+        if (searchOn && r.grounding) {
+          GROUNDING_OFF = true;
+          searchOn = false;
+          const r2 = await geminiOnce(model, build(false, model, attempt * 3000), timeoutMs);
+          if (r2.kind === "ok") {
+            setAIHealth("nosearch", "Live web search isn't available on this key, so results come from the model's own knowledge.");
+            const out = {
+              content: [{
+                type: "text",
+                text: r2.text
+              }],
+              sources: [],
+              model,
+              grounded: false
+            };
+            if (body.schema) {
+              try {
+                out.parsed = JSON.parse(r2.text);
+              } catch (e) {}
+            }
+            return out;
+          }
+        }
+        // Park this model and move down the ladder. A daily cap is parked until
+        // the quota window rolls over; a per-minute one only briefly.
+        blockModel(model, r.daily ? msUntilQuotaReset() : r.retryMs || 30000);
+        if (!r.daily && r.retryMs) gemBlockedUntil = Date.now() + r.retryMs;
+        lastErr = new Error("API " + r.status);
+        continue;
+      }
+      lastErr = r.err || new Error("API " + (r.status || r.kind));
+    }
+    if (attempt < retries) await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
   }
-  if (PROXY_STATE !== "dead") {
-    try {
-      return await proxyCall(body, timeoutMs);
-    } catch (e) {/* fall through */}
+  // Every model on the ladder is spent.
+  setAIHealth("quota", "Today's free AI allowance is used up. It resets at midnight Pacific time.");
+  throw lastErr || new Error("API 429");
+}
+
+// Pull the real web pages Gemini actually read, so results can cite them.
+function groundingSources(cand) {
+  const chunks = cand?.groundingMetadata?.groundingChunks || [];
+  const out = [];
+  const seen = new Set();
+  for (const c of chunks) {
+    const uri = c?.web?.uri;
+    if (!uri) continue;
+    const title = c.web.title || "";
+    const k = title || uri;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({
+      title,
+      uri
+    });
+    if (out.length >= 8) break;
   }
-  if (!API_KEY && GEMINI_API_KEY) return geminiCall(body, timeoutMs, retries);
+  return out;
+}
+let PROXY_STATE = "untried"; // "untried" | "ok" | "dead"
+let PROXY_PATH = PROXY_PATHS[0];
+/* Find the proxy once, cheaply.
+
+   This used to be done by giving an unproven proxy a 4-second leash on the
+   real request — which is fine for a quick call and fatal for a grounded web
+   search, because those legitimately take 25-40 seconds. The search was being
+   aborted before it could ever succeed, the proxy was marked dead, and the app
+   silently dropped to the keyless path with no web search at all.
+
+   So discovery is now its own tiny request: a static host 404s in
+   milliseconds, and once a path answers, real requests get their full time. */
+async function findProxy() {
+  if (PROXY_STATE !== "untried") return PROXY_STATE === "ok";
+  for (const path of PROXY_PATHS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          action: "ping"
+        }),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      // Anything that isn't a routing miss means something is listening here.
+      // A 400 ("messages required") is a perfectly good sign of life.
+      if (res.status !== 404 && res.status !== 405) {
+        PROXY_STATE = "ok";
+        PROXY_PATH = path;
+        return true;
+      }
+    } catch (e) {
+      clearTimeout(timer);
+    }
+  }
+  PROXY_STATE = "dead";
+  return false;
+}
+async function proxyCall(body, timeoutMs) {
+  if (!(await findProxy())) throw new Error("proxy unavailable");
+  const paths = [PROXY_PATH];
+  let lastErr;
+  for (const path of paths) {
+    const ctrl = new AbortController();
+    // The proxy is known good by now, so give the request the time it needs —
+    // a live web search is slow by nature, not broken.
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error("proxy " + res.status);
+      PROXY_STATE = "ok";
+      PROXY_PATH = path;
+      const data = await res.json();
+      if (data && data.schema !== undefined) delete data.schema;
+      return data;
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+    }
+  }
+  if (PROXY_STATE !== "ok") PROXY_STATE = "dead";
+  throw lastErr || new Error("proxy unavailable");
+}
+
+/* Anthropic adapter. When a schema is requested we force a tool call, which
+   is Anthropic's equivalent of structured output. */
+async function anthropicCall(body, timeoutMs, retries) {
+  const req = {
+    model: body.model || MODELS.smart,
+    max_tokens: body.max_tokens || 1800,
+    messages: body.messages,
+    // Extended thinking eats the output budget and the response gets truncated
+    // before the model reaches its final tool call — the request bills in full
+    // and returns nothing. Never enable without re-measuring.
+    thinking: {
+      type: "disabled"
+    }
+  };
+  if (body.system) req.system = body.system;
+  // Note: no `temperature`. Sonnet 5 rejects it outright ("deprecated for this
+  // model") and the whole request 400s.
+  if (body.tools) req.tools = body.tools;
+  // Live web search on this path too, when the model is allowed to reach it.
+  if (body.search) {
+    req.tools = (req.tools || []).concat([{
+      type: "web_search_20250305",
+      name: "web_search",
+      max_uses: Math.min(Number(body.search.maxUses) || 3, 5)
+    }]);
+  }
+  if (body.schema && !body.tools) {
+    req.tools = [{
+      name: "emit",
+      description: "Return the result.",
+      input_schema: jsonSchemaFor(body.schema)
+    }];
+    // Forcing the tool stops the model searching at all, so only force it when
+    // there is no search to do.
+    if (!body.search) req.tool_choice = {
+      type: "tool",
+      name: "emit"
+    };
+  }
   for (let attempt = 0; attempt <= retries; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -1520,7 +2203,7 @@ async function apiCall(body, timeoutMs = 60000, retries = 2) {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: buildHeaders(),
-        body: JSON.stringify(body),
+        body: JSON.stringify(req),
         signal: ctrl.signal
       });
       clearTimeout(timer);
@@ -1531,13 +2214,109 @@ async function apiCall(body, timeoutMs = 60000, retries = 2) {
         continue;
       }
       if (!res.ok) throw new Error(`API ${res.status}`);
-      return await res.json();
+      const data = await res.json();
+      const tool = (data.content || []).find(c => c.type === "tool_use" && c.name === "emit");
+      if (tool) data.parsed = tool.input && tool.input.items || tool.input;
+      return data;
     } catch (e) {
       clearTimeout(timer);
       if (e.message === "AUTH") throw e;
       if (attempt === retries) throw e;
       await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
     }
+  }
+}
+
+// Gemini uses SCREAMING type names; Anthropic wants standard JSON Schema.
+function jsonSchemaFor(g) {
+  const conv = n => {
+    if (!n || typeof n !== "object") return n;
+    const t = String(n.type || "").toLowerCase();
+    const o = {
+      type: t || "string"
+    };
+    if (n.enum) o.enum = n.enum;
+    if (t === "integer") o.type = "integer";
+    if (t === "array") o.items = conv(n.items);
+    if (t === "object") {
+      o.properties = {};
+      for (const k in n.properties || {}) o.properties[k] = conv(n.properties[k]);
+      if (n.required) o.required = n.required;
+    }
+    return o;
+  };
+  // Anthropic tool input must be an object, so an array schema gets wrapped.
+  if (String(g.type).toLowerCase() === "array") {
+    return {
+      type: "object",
+      properties: {
+        items: conv(g)
+      },
+      required: ["items"]
+    };
+  }
+  return conv(g);
+}
+
+/* The single entry point every engine uses. Handles cache, dedupe, pooling
+   and provider fallback so callers only describe what they want. */
+async function apiCall(body, timeoutMs = 60000, retries = 2) {
+  const key = cacheKeyOf(body);
+  // A search means "go and look now". Replaying a stored answer is the one
+  // thing it must never do, however cheap that would be.
+  const hit = body.fresh ? null : aiCache.get(key);
+  if (hit && Date.now() - hit.at < AI_TTL) return hit.value;
+  if (aiInflight.has(key)) return aiInflight.get(key);
+  const p = aiPool(() => transport(body, timeoutMs, retries)).then(v => {
+    if (!body.fresh) aiCache.set(key, {
+      at: Date.now(),
+      value: v
+    });
+    if (aiCache.size > 60) aiCache.delete(aiCache.keys().next().value);
+    aiInflight.delete(key);
+    return v;
+  }, e => {
+    aiInflight.delete(key);
+    throw e;
+  });
+  aiInflight.set(key, p);
+  return p;
+}
+async function transport(body, timeoutMs, retries) {
+  try {
+    // Proxy first: it is the only path where the key is not in the page source.
+    if (PROXY_STATE !== "dead") {
+      try {
+        const r = await proxyCall(body, timeoutMs);
+        setAIHealth("live", "");
+        return r;
+      } catch (e) {/* fall through */}
+    }
+    if (API_KEY) {
+      try {
+        const r = await anthropicCall(body, timeoutMs, retries);
+        setAIHealth("live", "");
+        return r;
+      } catch (e) {
+        if (e.message !== "AUTH") throw e;
+      }
+    }
+      if (GEMINI_API_KEY) {
+      // Only the proxy carries the Anthropic key and its live web search. On
+      // the direct-Gemini path the app still matches, but from recall.
+      if (body.search) setAIHealth("nosearch", "Live web search runs on the server. Without it, results come from the model's own knowledge.");
+      return await geminiCall(body, timeoutMs, retries);
+    }
+    // Keyless Anthropic — works inside the Claude.ai preview, which proxies for us.
+    const r = await anthropicCall(body, timeoutMs, retries);
+    setAIHealth("live", "");
+    return r;
+  } catch (e) {
+    // Don't overwrite a specific diagnosis (quota, auth) with a generic one.
+    if (AI_HEALTH.state !== "quota" && AI_HEALTH.state !== "auth") {
+      setAIHealth("down", "Live search couldn't be reached.");
+    }
+    throw e;
   }
 }
 const insightQueue = [];
@@ -1553,7 +2332,7 @@ async function drainInsights() {
     try {
       await task();
     } catch (e) {}
-    await new Promise(r => setTimeout(r, !API_KEY && GEMINI_API_KEY ? 1600 : 400));
+    await new Promise(r => setTimeout(r, !API_KEY && GEMINI_API_KEY ? 1200 : 300));
   }
   insightRunning = false;
 }
@@ -1959,6 +2738,114 @@ const BUILTIN_OPPS = {
   }]
 };
 
+/* ══════════════════════════════════════════════════════════════════
+   GLOBAL LIBRARY — born in Canada, reaching the world.
+
+   The library above is Canadian, which meant the offline fallback could
+   only ever offer local work — the global half of the promise depended
+   entirely on live search being up. These are real organizations that
+   take remote contributions from anywhere, so a student in Regina can
+   serve a cause on the other side of the world without leaving home.
+
+   Remote-first on purpose. Placement programs that fly minors abroad
+   are a different thing with real safeguarding questions attached, and
+   they are not something to put in a list a 14-year-old browses alone.
+   ══════════════════════════════════════════════════════════════════ */
+const GLOBAL_OPPS = {
+  education: [{
+    title: "Article Translator or Copy Editor",
+    org: "Wikipedia / Wikimedia",
+    tagline: "Write something a few thousand strangers will read.",
+    desc: "Translate or improve articles in any language you speak. Wikipedia's coverage in most languages other than English is thin, so the gap you fill is real and measurable.",
+    hours: "Flexible",
+    link: "https://wikipedia.org",
+    tags: ["remote", "global", "languages"]
+  }, {
+    title: "Volunteer Content Translator",
+    org: "Translators without Borders / CLEAR Global",
+    tagline: "Crisis information only helps if people can read it.",
+    desc: "Translate health, crisis and humanitarian material into languages that need it. They run a supported onboarding, so being early in a language is not a blocker.",
+    hours: "Flexible",
+    link: "https://clearglobal.org",
+    tags: ["remote", "global", "languages"]
+  }, {
+    title: "Open Textbook Contributor",
+    org: "OpenStax / CK-12 Foundation",
+    tagline: "Free textbooks for students who can't buy any.",
+    desc: "Help write practice problems, worked solutions and explanations for free science and maths textbooks used across the world.",
+    hours: "Flexible",
+    link: "https://openstax.org",
+    tags: ["remote", "global"]
+  }],
+  environment: [{
+    title: "Wildlife Image Classifier",
+    org: "Zooniverse",
+    tagline: "Real research that stalls without volunteers.",
+    desc: "Tag animals in camera-trap footage, transcribe field notebooks, or map coastlines for active research projects. Your classifications end up in published papers.",
+    hours: "Flexible",
+    link: "https://zooniverse.org",
+    tags: ["remote", "global", "citizen-science"]
+  }, {
+    title: "Biodiversity Observer",
+    org: "iNaturalist / GBIF",
+    tagline: "The species in your own neighbourhood are data.",
+    desc: "Photograph and identify wildlife wherever you are. Records feed a global biodiversity database that researchers actually query.",
+    hours: "Flexible",
+    link: "https://inaturalist.org",
+    tags: ["remote", "global", "citizen-science"]
+  }, {
+    title: "Map Contributor, Disaster Response",
+    org: "Humanitarian OpenStreetMap Team",
+    tagline: "Aid teams can't reach places that aren't on a map.",
+    desc: "Trace buildings and roads from satellite imagery for regions hit by disaster or disease outbreak. Volunteers do the mapping that relief organizations navigate by.",
+    hours: "Flexible",
+    link: "https://hotosm.org",
+    tags: ["remote", "global"]
+  }],
+  tech: [{
+    title: "Open Source Contributor",
+    org: "Public code projects on GitHub",
+    tagline: "Your first pull request is closer than you think.",
+    desc: "Many projects tag issues as good-first-issue specifically for newcomers. Documentation fixes count, and are how most contributors start.",
+    hours: "Flexible",
+    link: "https://github.com",
+    tags: ["remote", "global"]
+  }, {
+    title: "Book Digitiser and Proofreader",
+    org: "Project Gutenberg / Distributed Proofreaders",
+    tagline: "Keeping public-domain books free, one page at a time.",
+    desc: "Proofread a page at a time to turn scanned public-domain books into clean free ebooks. The unit of work is small enough to do between classes.",
+    hours: "Flexible",
+    link: "https://pgdp.net",
+    tags: ["remote", "global"]
+  }],
+  community: [{
+    title: "Audiobook Narrator",
+    org: "LibriVox",
+    tagline: "Read a chapter aloud. Someone, somewhere, listens to it.",
+    desc: "Record public-domain books as free audiobooks in any language. You claim one chapter at a time, so a single section is a complete contribution.",
+    hours: "Flexible",
+    link: "https://librivox.org",
+    tags: ["remote", "global", "languages"]
+  }, {
+    title: "Image Describer for Blind Readers",
+    org: "Be My Eyes / Bookshare",
+    tagline: "Sight, lent out by the minute.",
+    desc: "Volunteers describe images and assist blind and low-vision people through their phone. Calls are short and you take them when you're free.",
+    hours: "Flexible",
+    link: "https://bemyeyes.com",
+    tags: ["remote", "global"]
+  }, {
+    title: "Youth Delegate or Local Chapter Volunteer",
+    org: "United Nations Volunteers / UN Association",
+    tagline: "Global programmes with real youth tracks.",
+    desc: "UNV runs online volunteering assignments with organizations worldwide, and UN Associations run youth chapters in most countries. Some assignments have age floors, so read the posting.",
+    hours: "Varies",
+    link: "https://onlinevolunteering.org",
+    tags: ["remote", "global"]
+  }]
+};
+
 /* ═══════════════════════════════════════════════════════════════════
    MATCH SCORING ENGINE  (deterministic, runs over real data)
    The heart of the overhaul: instead of asking an LLM to invent
@@ -2123,6 +3010,29 @@ const SERVE_KEYWORDS = {
   animals: ["animal", "wildlife", "shelter", "humane", "spca", "dog", "cat", "conservation"],
   any: []
 };
+/* Organization names arrive in whatever form the model felt like that call:
+   "Immigrant Services Society of British Columbia (ISSofBC)" and
+   "ISSofBC (Immigrant Services Society of British Columbia)" are the same
+   charity, and the old key — lowercase and trim — treated them as two, so the
+   same organization could appear twice in one result list.
+
+   This strips the parenthetical alias, punctuation, and the boilerplate words
+   that carry no identifying information, then keeps the alphabetised token set
+   so word order can't fool it either. */
+const ORG_NOISE = /\b(the|of|and|for|inc|incorporated|ltd|limited|llc|society|association|foundation|charity|charitable|organization|organisation|canada|canadian|national|international|group|centre|center|services|service)\b/g;
+function orgKey(name) {
+  let s = String(name || "").toLowerCase();
+  // "Full Name (ALIAS)" and "ALIAS (Full Name)" collapse to the same tokens
+  // once the brackets and their contents are folded in rather than dropped.
+  s = s.replace(/[()\[\]]/g, " ");
+  s = s.replace(/[^a-z0-9\s]/g, " ");
+  s = s.replace(ORG_NOISE, " ");
+  const toks = s.split(/\s+/).filter(Boolean);
+  if (!toks.length) return String(name || "").toLowerCase().trim();
+  // Acronyms often survive as one long token ("issofbc"); sorting the set means
+  // "issofbc immigrant british columbia" matches regardless of arrangement.
+  return Array.from(new Set(toks)).sort().join(" ");
+}
 function textOf(o) {
   return `${o.title || ""} ${o.org || ""} ${o.role || ""} ${o.desc || ""} ${o.tagline || ""} ${o.whyMatch || ""} ${(o.tags || []).join(" ")}`.toLowerCase();
 }
@@ -2197,13 +3107,39 @@ function scoreMatch(opp, profile) {
     reasons
   };
 }
+/* ── Specificity gate ──
+   A match names a role. An idea names a category. This rejects the second
+   kind before it ever reaches the student, because "Music Volunteer at the
+   YMCA" is not something you can act on — it's a prompt to go do research,
+   which is the work RISE is supposed to have already done.
+
+   Curated library entries are exempt: they are deliberately broad starting
+   points and the UI labels them as such. */
+const VAGUE_TITLES = /^(general |community |youth |student |summer |seasonal )?(volunteer|helper|assistant|supporter|participant|member|opportunit(y|ies))s?$/i;
+const VAGUE_PHRASES = /\b(help out|helping out|support the team|various tasks|as needed|make a difference|get involved|give back|wide range of|all kinds of|and more)\b/i;
+function specificityIssues(o, profile) {
+  const issues = [];
+  const title = (o.title || "").trim();
+  // "Volunteer", "Music Volunteer", "Youth Helper" — a category, not a post.
+  if (VAGUE_TITLES.test(title) || title.split(/\s+/).length < 2) issues.push("title");
+  const duties = (o.role || o.desc || "").trim();
+  if (duties.length < 60) issues.push("duties");
+  if (VAGUE_PHRASES.test(duties)) issues.push("filler");
+  // The whole promise of the product is that the reason references THEM.
+  const why = (o.whyMatch || "").toLowerCase();
+  if (why) {
+    const capWords = String(profile.capText || "").toLowerCase().split(/[^a-z]+/).filter(w => w.length > 4);
+    if (capWords.length && !capWords.some(w => why.includes(w))) issues.push("generic-why");
+  }
+  return issues;
+}
 function rankMatches(candidates, profile, opts = {}) {
   const min = opts.min != null ? opts.min : 15;
   const seen = new Set();
   const scored = [];
   for (const o of candidates) {
     if (!o || !o.org) continue;
-    const key = (o.org || "").toLowerCase().trim() + "|" + (o.title || "").toLowerCase().trim();
+    const key = orgKey(o.org) + "|" + (o.title || "").toLowerCase().trim();
     if (seen.has(key)) continue;
     seen.add(key);
     const {
@@ -2211,10 +3147,15 @@ function rankMatches(candidates, profile, opts = {}) {
       reasons
     } = scoreMatch(o, profile);
     if (score < min) continue;
+    // AI-generated results must be role-level. Curated library entries are
+    // exempt — they're labelled as starting points, not matches.
+    const issues = o._curated ? [] : specificityIssues(o, profile);
+    if (issues.length >= 2) continue;
     scored.push({
       ...o,
       _score: score,
-      _reasons: reasons
+      _reasons: reasons,
+      _vague: issues
     });
   }
   scored.sort((a, b) => b._score - a._score);
@@ -2240,6 +3181,21 @@ function categorizeEntry(e) {
   if (/financ|budget|business|entrepreneur|money/.test(t)) return "economy";
   if (/senior|tech support|companion|elder|disab|inclus/.test(t)) return "community";
   return "community";
+}
+
+// Date-only strings need the T00:00 suffix or they're parsed as UTC and can
+// render as the previous day west of Greenwich — which is all of Canada.
+function fmtDate(d) {
+  if (!d) return "";
+  try {
+    return new Date(d + "T00:00").toLocaleDateString("en-CA", {
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    });
+  } catch (e) {
+    return d;
+  }
 }
 
 // ISO week key (year-week) for streak math.
@@ -2445,23 +3401,51 @@ function computeBadges(entries, goal) {
 
 // Instant local engine - cannot fail, works offline, honours the dedupe set
 // Gather every library candidate across ALL selected talents, for the scorer.
-function libraryCandidates(talentIds, cityShort) {
-  const ids = talentIds && talentIds.length ? talentIds : Object.keys(BUILTIN_OPPS);
+/* Pick the pool that matches where they want to serve. A student who chose
+   remote or a region abroad should not be handed "your local YMCA branch" —
+   that was the offline library's whole vocabulary before. */
+function globalPool(talentIds) {
+  const ids = talentIds && talentIds.length ? talentIds : [];
   const out = [];
+  const seen = new Set();
+  const take = list => (list || []).forEach(o => {
+    if (seen.has(o.org)) return;
+    seen.add(o.org);
+    out.push(o);
+  });
+  // Their own categories first, then the rest — the global pool is small
+  // enough that an off-category remote role still beats nothing.
+  ids.forEach(tid => take(GLOBAL_OPPS[tid]));
+  Object.keys(GLOBAL_OPPS).forEach(k => take(GLOBAL_OPPS[k]));
+  return out;
+}
+function libraryCandidates(talentIds, cityShort, opts = {}) {
+  const global = !!opts.global;
+  const out = [];
+  if (global) {
+    globalPool(talentIds).forEach(o => out.push({
+      ...o,
+      where: o.where || "Remote — from anywhere",
+      _curated: true
+    }));
+    return out;
+  }
+  const ids = talentIds && talentIds.length ? talentIds : Object.keys(BUILTIN_OPPS);
   ids.forEach(tid => {
     (BUILTIN_OPPS[tid] || []).forEach(o => {
       out.push({
         ...o,
         where: o.where || `${cityShort}: local branch or chapter`,
-        _cat: tid
+        _cat: tid,
+        _curated: true
       });
     });
   });
   return out;
 }
-function builtinOpps(talent, cityShort, seenSet, n = 4) {
+function builtinOpps(talent, cityShort, seenSet, n = 4, opts = {}) {
   const dedupe = list => list.filter(o => {
-    const k = (o.org || "").toLowerCase().trim().replace(/\s+/g, " ");
+    const k = orgKey(o.org);
     return k && !seenSet.has(k);
   });
   const shuffle = arr => {
@@ -2472,6 +3456,17 @@ function builtinOpps(talent, cityShort, seenSet, n = 4) {
     }
     return a;
   };
+  if (opts.global) {
+    // Shuffle WITHIN tiers, not across them — shuffling the combined pool
+    // would throw away the category ordering globalPool just established.
+    const inCat = shuffle(dedupe(GLOBAL_OPPS[talent] || []));
+    const rest = shuffle(dedupe(globalPool([])).filter(o => !(GLOBAL_OPPS[talent] || []).some(c => c.org === o.org)));
+    return inCat.concat(rest).slice(0, n).map(o => ({
+      ...o,
+      where: o.where || "Remote — from anywhere",
+      _curated: true
+    }));
+  }
   // 1) STRICT category first - everything in the chosen talent's pool.
   const primary = shuffle(dedupe(BUILTIN_OPPS[talent] || []));
   // 2) Only if the category pool cannot fill the batch, backfill from community.
@@ -2480,7 +3475,8 @@ function builtinOpps(talent, cityShort, seenSet, n = 4) {
   const out = primary.slice(0, n).concat(backup);
   return out.map(o => ({
     ...o,
-    where: `${cityShort}: local branch or chapter`
+    where: `${cityShort}: local branch or chapter`,
+    _curated: true
   }));
 }
 
@@ -2493,28 +3489,47 @@ function templateInsight(name, opp, supText) {
   return t[idx];
 }
 
-// Shared student-profile block - every engine matches against the SAME criteria,
-// including availability and preferred setting (this is what makes results fit).
+// Shared student-profile block, structured as a Volunteering Interest Card:
+// who they are, and their who / what / where / when / how / why of serving.
+// Every engine matches against the SAME card, which is what stops the four of
+// them drifting into four different interpretations of the same student.
 function profileBlock(loc, tal, supText, prefs) {
   const cats = prefs.talLabels && prefs.talLabels.length ? prefs.talLabels.join(", ") : tal?.label || "their chosen area";
-  const catLabel = cats;
   const serveTxt = prefs.serveTxt && prefs.serveTxt.length ? prefs.serveTxt : "";
   const detail = (prefs.detail || "").trim();
   const capLine = supText && supText.length ? supText : "general interest in the category";
-  return `STUDENT PROFILE (match against EVERY element, not just the category):
-- Location: ${loc.label}, Canada
-- INTEREST AREAS (may be multiple): ${cats}
-- SPECIFIC CAPABILITIES they selected (match these precisely, they may span more than one area): "${capLine}"
-${detail ? `- ADDITIONAL DETAIL IN THEIR OWN WORDS (high priority, match this closely): "${detail}"` : ""}
-${serveTxt ? `- WANTS TO SERVE: ${serveTxt}` : ""}
-- Availability: ${prefs.timeTxt || "flexible"}
-- Preferred setting: ${prefs.vibeTxt || "any"}
+  const global = isGlobalLoc(loc.id);
+  const place = global ? loc.label : `${loc.label}, Canada`;
+  return `VOLUNTEERING INTEREST CARD — match against EVERY line, not just the category.
 
-YOUR TASK: This is MATCHMAKING, not a list of suggestions. You are matching one specific student to specific ROLES at real organizations. A result is only acceptable if it would be a worse match for a student with a different capability. If a result would fit any volunteer equally well, it is WRONG: discard it and find a better one.
+WHO THEY ARE
+- Aged 14-18, based in ${prefs.homeLabel || "Canada"}
+- Interest areas (may be more than one): ${cats}
+
+HOW THEY CAN SERVE (their actual capabilities — this is the core of the match)
+- Selected capabilities, each with the level they claim: "${capLine}"
+${prefs.langTxt ? `- Languages: ${prefs.langTxt}` : ""}
+${detail ? `- In their own words (HIGHEST PRIORITY — match this closely): "${detail}"` : ""}
+
+WHO THEY WANT TO SERVE
+- ${serveTxt || "No population stated — any is acceptable"}
+
+WHERE THEY WANT TO SERVE
+- ${prefs.virtualOnly ? "REMOTE ONLY — every result must be doable entirely from home, from anywhere" : `${place}`}
+- Setting: ${prefs.vibeTxt || "any"}
+${prefs.vtypeTxt ? `- How they want to show up: ${prefs.vtypeTxt}` : ""}
+
+WHEN THEY CAN SERVE
+- ${prefs.timeTxt || "flexible"}
+
+WHY THEY'RE DOING IT
+- ${prefs.whyTxt || "Not stated"}
+
+YOUR TASK: This is MATCHMAKING, not a list of suggestions. You are matching one specific student to specific ROLES at real organizations. A result is only acceptable if it would be a WORSE match for a student with a different capability. If a result would fit any volunteer equally well, it is WRONG: discard it and find a better one.
 
 HARD REQUIREMENTS. Every result MUST satisfy ALL of these. Reject any result that fails even one:
 
-1. REAL AND CURRENT: an organization that exists today, is active in Canada, and takes volunteers aged 14-18 (or runs a youth program).
+1. REAL AND CURRENT: an organization that exists today, is active in ${global ? loc.short || loc.label : "Canada"}, and takes volunteers aged 14-18 (or runs a youth program).
 
 2. ROLE-LEVEL, NOT ORG-LEVEL. Return a specific position, not an organization to contact.
    BAD: "Volunteer" at YMCA. BAD: "Music Volunteer" at a hospital. BAD: "Help at community events".
@@ -2522,124 +3537,490 @@ HARD REQUIREMENTS. Every result MUST satisfy ALL of these. Reject any result tha
    GOOD: "Assistant Coach, U10 Girls Soccer" at a named community club.
    If you cannot name a specific role, the organization does not belong in the results.
 
-3. CAPABILITY ALIGNMENT: the role must directly require the exact capability quoted above, not just the broad category.
+3. CAPABILITY ALIGNMENT: the role must directly require the exact capability quoted above, AT THE LEVEL THEY CLAIM, not just the broad category.
+   - Respect the stated level in both directions. Do not hand a "still learning" student a role that carries a room alone; do not hand an "advanced" or "certified" student a role that wastes them on setup and chairs.
+   - "Still learning" means the role must have supervision or a partner built into it. Say where that support comes from in the role description.
    - Someone who plays guitar and leads singalongs must NOT be matched to a role that needs an advanced classical soloist, and vice versa.
    - Someone who does hands-on field restoration must NOT be matched to a data-entry or public-speaking role.
    - Someone who tutors math must NOT be matched to a generic literacy program unless it explicitly needs math.
-   The "whyMatch" field must name their capability and the specific demand of the role that requires it.
+   The "whyMatch" field must quote their capability and name the specific demand of the role that requires it.
 
 4. AREA: the role must sit inside one of the student's interest areas (${cats}). Reject roles outside all of them.
 
-5. ${prefs.virtualOnly ? "VIRTUAL / REMOTE ONLY: the student explicitly selected virtual, so every result must be doable entirely from home." : `LOCATION: in or serving ${loc.short || loc.label}. Setting should suit: ${prefs.vibeTxt || "any setting"}.`}
+5. ${prefs.virtualOnly ? "REMOTE ONLY: the student explicitly chose remote, so every result must be doable entirely from home. A role requiring physical presence is an automatic reject, however good the skill fit." : `LOCATION: in or serving ${loc.short || loc.label}. Setting should suit: ${prefs.vibeTxt || "any setting"}.`}${global && !prefs.virtualOnly ? `\n   They are based in Canada, so favour roles they can genuinely reach: remote-first positions, chapters of international organizations, or roles that fit a visit of a few weeks. Do not return a role that assumes they already live there full time.` : ""}
 
-6. ${serveTxt ? `POPULATION: the role should serve ${serveTxt}. If a role serves a different population, only include it if the capability match is exceptionally strong, and say so in whyMatch.` : "POPULATION: no preference stated, so any population is acceptable."}
+6. ${prefs.langTxt ? `LANGUAGES: they speak ${prefs.langTxt}. If any of these is not English, actively look for at least one role where that language is the reason they'd be chosen — interpreting, settlement and newcomer support, homework help, or a community organization serving those speakers. Do not force it if nothing real exists.\n\n6b. ` : ""}${serveTxt ? `POPULATION: the role should serve ${serveTxt}. If a role serves a different population, only include it if the capability match is exceptionally strong, and say so in whyMatch.` : "POPULATION: no preference stated, so any population is acceptable."}
 
 7. TIME: realistic for ${prefs.timeTxt || "a few hours a week"}. Set "commitment" and "hours" to match. Do not offer a 10 hr/week role to someone with 1-2 hrs.
 
-8. ${LINK_RULE}
+8. MOTIVATION: ${prefs.whyTxt ? `they are doing this to ${prefs.whyTxt.toLowerCase()}. A role that technically fits their skill but not this reason is a weak match. If they want to meet people, do not send them somewhere they'd work alone; if they want career exposure, favour roles with real practitioners around them.` : "no motivation stated, so do not weight this."}
 
-9. VARIETY: 5 DIFFERENT organizations. No duplicates, and do not return five versions of the same role type.
+9. ${LINK_RULE}
 
-SPECIFICITY TEST before you output. For each result ask: "Could I swap in a student with a completely different skill and would this still read as a sensible match?" If yes, the result is too generic. Replace it.`;
+10. VARIETY: 5 DIFFERENT organizations. No duplicates, and do not return five versions of the same role type.
+
+BEFORE YOU OUTPUT, run both tests on every result:
+  SPECIFICITY — "Could I swap in a student with a completely different skill and would this still read as a sensible match?" If yes, it is too generic. Replace it.
+  ACTIONABILITY — "Could this student do the firstStep tomorrow without doing any further research?" If not, the result is an idea, not a match. Replace it.`;
 }
-async function webSearchOpps(talent, location, supText, prefs = {}, exclude = "") {
+/* ══════════════════════════════════════════════════════════════════
+   MATCH PIPELINE
+
+     STAGE 1  DISCOVER   two grounded web engines + two recall engines,
+                         each with a different search strategy so they
+                         surface different organizations
+     STAGE 2  NORMALIZE  clean, validate, dedupe by org and by domain
+     STAGE 3  JUDGE      one model pass scores every surviving candidate
+                         against the student on four named dimensions and
+                         must cite the duty that needs their capability
+     STAGE 4  BLEND      AI judgement (70%) + deterministic keyword score
+                         (30%), so a confident model can't fully override
+                         the offline scorer and vice versa
+
+   Stage 3 is the part that was missing before: the old code trusted
+   whatever "whyMatch" the generator wrote about its own suggestion.
+   Nothing was ever asked to be skeptical.
+   ══════════════════════════════════════════════════════════════════ */
+
+const SYS_MATCH = `You are a volunteer-placement advisor for high-school students aged 14-18. RISE started in Canada and most of its students are there, but they serve anywhere in the world — locally, remotely, or while travelling. You know the charitable sector well and you are honest about the limits of what you know.
+
+Rules you never break:
+- You only name organizations you are confident actually exist and are active today in the region asked about.
+- You return a ROLE, never a category. If you cannot name the position and what the student would actually do in a session, you do not have a match yet.
+- You would rather say "I am confident about the organization but not this specific program" than invent a program name.
+- You never invent an email address, a phone number, a program name, or a URL path.
+- You would rather return three real matches than five padded ones.
+- You write plainly. No exclamation marks, no hype words (amazing, incredible, perfect, dream, passionate), no jokes, no preamble. Never use the words delve, leverage, or furthermore.`;
+/* Search geography, passed to the web-search tool so it looks in the right
+   place. Without this, "volunteer tutor" reliably finds Toronto listings for a
+   student in Kamloops, because that's what the open web is weighted towards. */
+const REGION_HINTS = {
+  usa: {
+    country: "US"
+  },
+  "uk-ireland": {
+    country: "GB"
+  },
+  europe: {
+    country: "FR"
+  },
+  latam: {
+    country: "MX"
+  },
+  africa: {
+    country: "KE"
+  },
+  mena: {
+    country: "AE"
+  },
+  "south-asia": {
+    country: "IN"
+  },
+  "east-asia": {
+    country: "SG"
+  },
+  oceania: {
+    country: "AU"
+  }
+};
+const PROV_OF = {
+  on: "Ontario",
+  bc: "British Columbia",
+  ab: "Alberta",
+  qc: "Quebec",
+  mb: "Manitoba",
+  sk: "Saskatchewan",
+  ns: "Nova Scotia",
+  nb: "New Brunswick",
+  nl: "Newfoundland and Labrador",
+  pe: "Prince Edward Island",
+  yt: "Yukon",
+  nt: "Northwest Territories",
+  nu: "Nunavut"
+};
+function searchGeo(loc) {
+  if (!loc) return null;
+  if (REGION_HINTS[loc.id]) return REGION_HINTS[loc.id];
+  if (loc.id === "virtual") return null; // remote work isn't geographically anchored
+  const group = LOC_GROUPS.find(g => g.locs.some(l => l.id === loc.id));
+  const region = group && PROV_OF[String(group.prov || "").toLowerCase()] || (group ? group.prov : "");
+  return {
+    country: "CA",
+    region: region && !/rest of the world|remote/i.test(region) ? region : "",
+    city: loc.short || loc.label
+  };
+}
+
+/* Each search run leads with a different angle. Two students with the same
+   answers — or the same student searching twice — should not be handed an
+   identical list, and the model will otherwise reach for the same obvious
+   national charities every time. Rotating the opening search is the cheapest
+   way to reach a different part of the web. */
+const ANGLES = [`START HERE: search the student's exact capability words as a role title, plus their city. Look for the smallest, most specific organizations that come back — a single neighbourhood house or one hospital programme beats a national charity's generic page.`, `START HERE: search the local volunteer-matching boards and the city's own volunteer portal for currently-listed postings. Open the individual listings, not the category pages.`, `START HERE: think about which local institutions would structurally need this exact skill — hospitals, long-term care homes, libraries, school boards, settlement agencies, community centres — then search those named institution types in this city with the skill word.`, `START HERE: search for the population the student wants to serve in their city, find the organizations that serve that group, then check each one's volunteer page for a role using this student's skill.`];
+
+/* ── DISCOVERY ──
+   One grounded call, not four.
+
+   The old design fired four engines at every search. On a metered account
+   that's four times the web-search bill for heavily overlapping results — the
+   same three organizations arriving by four routes. One well-instructed search
+   pass with real web access beats four guesses, and the judge below is what
+   adds rigour, not repetition. */
+async function webSearchOpps(talent, location, supText, prefs = {}, exclude = "", opts = {}) {
   const loc = ALL_LOCS.find(l => l.id === location) || {
     label: location
   };
   const tal = TALENTS.find(t => t.id === talent);
-  return extractJSON(await apiCall({
-    model: "claude-sonnet-4-6",
-    max_tokens: 3500,
-    tools: [{
-      type: "web_search_20250305",
-      name: "web_search"
-    }],
+  const want = opts.count || 5;
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 3200,
+    temperature: 0.3,
+    schema: OPP_SCHEMA,
+    // Always hit the network: a live search that replays a cached answer is
+    // not a live search.
+    fresh: true,
+    search: Object.assign({
+      maxUses: opts.maxUses || 4
+    }, searchGeo(loc) || {}),
     messages: [{
       role: "user",
-      content: `Search the web for SPECIFIC volunteer ROLES that fit this Canadian high-school student. Run MULTIPLE searches from different angles before answering. Search for the precise capability, not the broad category: for example "${loc.short || loc.label} ${tal?.label} volunteer positions", the exact skill words the student used, the local volunteer centre listings, the city volunteer page, and named organizations' own Get Involved pages. Read the actual role descriptions you find, then return the 6 best-matched POSITIONS. Prefer a named position with real duties over an organization's general volunteer page.
+      content: `Find ${want} SPECIFIC volunteer ROLES for this student. Search the live web, open the actual listings, then call emit once with what you found.
 
+TODAY IS ${new Date().toISOString().slice(0, 10)}. You are looking for positions a student could apply to THIS WEEK. Prefer a dated, currently-open posting over an organization's evergreen "we sometimes need volunteers" page. If a listing shows a posting date, an application deadline, a term start, or an intake session, put it in "commitment" — that is what makes this real rather than a suggestion.
+
+${ANGLES[(opts.angle || 0) % ANGLES.length]}
+
+WHERE ELSE TO LOOK — places that carry real postings, not general advice pages:
+  · the local volunteer centre and its listings board
+  · ${prefs.virtualOnly ? "remote and virtual volunteering boards" : `"${loc.short || loc.label} volunteer" listing sites`}
+  · named organizations' own Volunteer / Get Involved pages
+${prefs.langTxt && !/^english/i.test(prefs.langTxt) ? `  · one search for a role needing their language: ${prefs.langTxt}\n` : ""}
 ${profileBlock(loc, tal, supText, prefs)}
-${exclude ? `\nALREADY SHOWN - EXCLUDE these organizations entirely: ${exclude}.` : ""}
-Your ENTIRE response must be the JSON array and nothing else. Start with [ and end with ]:
-${JSON_SHAPE}`
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}
+
+Open the postings before you decide. A search snippet cannot tell you whether a role needs this student's specific skill — only the listing itself can.
+
+For every result set "sourceUrl" to the exact page you read it on, and "link" to the organization's root homepage. If a posting names a contact person or a coordinator's email, put it in firstStep and contactEmail — that is the single most useful thing on the card. Never invent one.
+
+Return fewer than ${want} rather than padding with roles any volunteer could do.`
     }]
-  }));
+  }, 90000, 1);
+  return tagSources(extractJSON(res), res, "web");
 }
 
-// PRECISION ENGINE - hunts for exact matches to the student's own words
+/* PRECISION PASS — only used by Load More, where the student has already seen
+   the first set and is asking for different ground. Runs the student's own
+   words as search terms rather than the category. */
 async function webSearchExact(talent, location, supText, prefs = {}, exclude = "") {
   const loc = ALL_LOCS.find(l => l.id === location) || {
     label: location
   };
   const tal = TALENTS.find(t => t.id === talent);
-  return extractJSON(await apiCall({
-    model: "claude-sonnet-4-6",
-    max_tokens: 3000,
-    tools: [{
-      type: "web_search_20250305",
-      name: "web_search"
-    }],
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 2600,
+    temperature: 0.3,
+    schema: OPP_SCHEMA,
+    fresh: true,
+    search: Object.assign({
+      maxUses: 3
+    }, searchGeo(loc) || {}),
     messages: [{
       role: "user",
-      content: `A Canadian student described their capability in their own words: "${supText}". Search the web for volunteer ROLES that require THIS EXACT capability, not the general category. Break their words into concrete searchable terms (specific instruments, subjects, sports, tools, populations) and search those precise role titles${prefs.virtualOnly ? " (VIRTUAL/REMOTE only)" : ` in or near ${loc.short || loc.label}`}. Verify each organization is real and currently active by checking its own site. Return the 4-5 sharpest matches, and for each one be able to state exactly which duty of the role needs their specific capability.
+      content: `A student described what they can do in their own words: "${supText}"${prefs.detail ? ` They added: "${prefs.detail}"` : ""}
+
+Break that into concrete searchable terms — the specific instrument, subject, sport, language, software or population — and search those as role titles${prefs.virtualOnly ? " on remote volunteering boards" : ` in ${loc.short || loc.label}`}. Open the listings you find.
+
+You are looking for roles that would be a WORSE fit for a student without this exact capability. If a role suits any volunteer equally well, it does not belong in the answer.
 
 ${profileBlock(loc, tal, supText, prefs)}
-${exclude ? `\nALREADY SHOWN - EXCLUDE these organizations entirely: ${exclude}.` : ""}
-Your ENTIRE response must be the JSON array and nothing else. Start with [ and end with ]:
-${JSON_SHAPE}`
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}
+Set sourceUrl to the page you read. Return 3-4 results, or fewer if that's what is genuinely there. Then call emit once.`
     }]
-  }));
+  }, 90000, 1);
+  return tagSources(extractJSON(res), res, "web");
 }
+
+/* ── FALLBACK ENGINES (no web search) ──
+   Used when web search isn't available — no proxy deployed, or a free key with
+   no grounding allowance. Recall-only, so results are organizations the model
+   knows rather than current postings, and the card says so. */
 async function aiOppsNational(talent, location, supText, prefs = {}, exclude = "") {
   const loc = ALL_LOCS.find(l => l.id === location) || {
     label: location
   };
   const tal = TALENTS.find(t => t.id === talent);
-  return extractJSON(await apiCall({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1800,
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 2200,
+    temperature: 0.5,
+    schema: OPP_SCHEMA,
+    fresh: true,
     messages: [{
       role: "user",
-      content: `From well-known REAL national Canadian organizations with local chapters (libraries, hospitals, YMCA, food banks, literacy and STEM charities, conservation groups, sports and disability-sport organizations), identify the 5 specific ROLES that best match this student. Name the actual position within the organization and the program it belongs to, not just the organization. Only include organizations you are certain exist and certain run the program you name. Quality over quantity: 3 precise matches beat 5 vague ones.
+      content: `From well-known REAL organizations with local chapters in ${loc.label} — public libraries, hospitals and children's hospitals, YMCA, BGC Canada, food banks, literacy and STEM charities, conservation groups, Special Olympics and other disability-sport bodies, Scouts/Guides, hospices, and the large international NGOs that run youth or remote programs — identify the 5 specific ROLES that best match this student.
+
+Name the actual position AND the program it sits inside, not just the organization. "Volunteer at the YMCA" is a failure. "Youth Swim Program Assistant, YMCA Aquatics" is an answer.
+
+Only include an organization if you are certain it exists AND certain it runs the program you name. If you are confident about the organization but not the program, describe the role generically at the level you are sure of rather than inventing a program name. Three precise matches beat five vague ones — returning fewer is allowed.
 
 ${profileBlock(loc, tal, supText, prefs)}
-${exclude ? `\nALREADY SHOWN - EXCLUDE these organizations entirely: ${exclude}.` : ""}
-Your ENTIRE response must be the JSON array only - start with [ and end with ]: ${JSON_SHAPE}`
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}`
     }]
-  }));
+  });
+  return tagSources(extractJSON(res), res, "recall");
 }
 async function aiOppsLocal(talent, location, supText, prefs = {}, exclude = "") {
   const loc = ALL_LOCS.find(l => l.id === location) || {
     label: location
   };
   const tal = TALENTS.find(t => t.id === talent);
-  return extractJSON(await apiCall({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1800,
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 2200,
+    temperature: 0.5,
+    schema: OPP_SCHEMA,
+    fresh: true,
     messages: [{
       role: "user",
-      content: `Think of REAL local organizations specific to ${loc.label}, Canada: community centres, local festivals and theatres, city recreation programs, neighbourhood charities, local food banks, long-term care homes, and shelters. Identify the 5 specific ROLES at these organizations that best match this student, naming the actual position and program. Only include organizations you are confident exist in this area; if unsure, prefer real regional organizations that serve the area. A precise role at a regional organization beats a guessed local one.
+      content: `Think of REAL organizations specific to ${loc.label}: community centres, local festivals and theatres, city recreation programs, neighbourhood charities, food banks and hampers, long-term care homes, hospices, shelters, and the regional health service.
+
+Identify the 5 specific ROLES at these organizations that best match this student, naming the actual position and program.
+
+Only include an organization you are confident exists in this area. If you are unsure whether a small local group is real, substitute a REGIONAL organization that genuinely serves this area. A precise role at a real regional organization is worth far more than a guessed local one — a student who emails an organization that does not exist loses trust in the whole tool.
 
 ${profileBlock(loc, tal, supText, prefs)}
-${exclude ? `\nALREADY SHOWN - EXCLUDE these organizations entirely: ${exclude}.` : ""}
-Your ENTIRE response must be the JSON array only - start with [ and end with ]: ${JSON_SHAPE}`
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}`
     }]
+  });
+  return tagSources(extractJSON(res), res, "recall");
+}
+
+function tagSources(arr, res, kind) {
+  const sources = res && res.sources || [];
+  return (arr || []).map(o => Object.assign({}, o, {
+    _origin: kind,
+    _sources: matchSources(o, sources)
   }));
+}
+
+// Attach only the citations whose domain or title actually relates to this org,
+// so a card never claims a source it wasn't built from.
+function matchSources(opp, sources) {
+  // The page the model actually read beats anything inferred from the citation
+  // list, so it leads.
+  const own = opp.sourceUrl && /^https?:\/\//.test(opp.sourceUrl) ? [{
+    title: "Posting",
+    uri: opp.sourceUrl
+  }] : [];
+  if (!sources.length) return own;
+  const org = (opp.org || "").toLowerCase();
+  const words = org.split(/[^a-z]+/).filter(w => w.length > 3);
+  let host = "";
+  try {
+    host = new URL(opp.link).hostname.replace(/^www\./, "").toLowerCase();
+  } catch (e) {}
+  const root = host.split(".")[0];
+  const related = sources.filter(s => {
+    const hay = (s.title + " " + s.uri).toLowerCase();
+    if (s.uri === opp.sourceUrl) return false; // already first
+    if (root && root.length > 3 && hay.includes(root)) return true;
+    return words.some(w => hay.includes(w));
+  });
+  return own.concat(related).slice(0, 3);
+}
+
+/* ── STAGE 3: the judge ──
+   One call scores every candidate at once. Scoring them together is
+   deliberate: the model calibrates against the actual field of options
+   instead of rating each one in a vacuum, which is where "everything is
+   a 9/10" comes from. */
+const JUDGE_RUBRIC = `IMPORTANT — these candidates were written by a language model, quite possibly you, working from this same student profile. So of course they look tailored: that is what the generator was asked to do. Some of them are real. Some are a real organization with an invented program attached. A few may be entirely fabricated. Finding which is which is the whole job here, and you are the only step that ever checks.
+
+Score each candidate on four dimensions. Be strict — most real volunteer listings are mediocre matches, and saying so is the useful thing.
+
+capability (0-40) — does this role REQUIRE the student's specific stated capability, at the level they claim?
+   36-40  the role is impossible to do well without it, and the level fits
+   25-35  the capability is a clear, named advantage in the role
+   12-24  the capability is loosely relevant; the role is in the right area
+   0-11   any volunteer could do this equally well
+   Level mismatch cuts this in both directions: a role that needs more than they claim is a risk to them and to the organization; a role that needs far less wastes them. If they listed a language other than English and the role is built around that language, treat it as a named capability, not a bonus.
+population (0-20) — does it serve the group they asked for, AND does it match why they're doing this? 20 exact on both, 10 adjacent, 4 unrelated. If they stated no preference, give 14. A role that fits the population but fights their stated motivation (solo work for someone who wants to meet people; back-office work for someone who wants career exposure) caps at 12.
+logistics (0-20) — location, time commitment, setting, age eligibility, and how they want to show up (from home / in their community / while travelling) all workable? Subtract hard for a role that needs more hours than they have, is in the wrong place, requires presence when they asked for remote, or has an age floor above them.
+credibility (0-20) — how sure are you this organization and this role exist as described? Judge the ROLE, not just the organization.
+   18-20  You could have named this exact programme before you saw this list.
+   11-17  You know the organization is real and this is the kind of thing it runs, but you are inferring the specific role.
+   4-10   You recognise the organization's name and nothing more, OR it is a plausible-sounding local charity you cannot actually place.
+   0-3    You cannot confirm the organization exists at all.
+   The generator had every incentive to sound confident. You have none. If your only reason for believing a programme exists is that it appears in this list, that is 10 at most.
+
+verdict: "strong" (total >= 72), "good" (50-71), "weak" (30-49), "reject" (< 30, or anything you believe is not real).
+
+CALIBRATION — read this before you write any numbers. Scoring a whole set at 90+ is the most common way this task is done badly, and it makes the ranking worthless: if everything is strong, nothing is. Across five candidates, a realistic spread is about one strong, two good, and two weak or rejected. Award full marks on a dimension only when you would defend that score to someone who checked. If you find yourself putting nearly everything above 70, you are being agreeable rather than useful — go back and separate them.
+evidence: one sentence naming the SPECIFIC duty of this role that needs their capability. Quote their words. If you can't name one, that is itself a low capability score.
+concern: the single biggest reason this might not work out, or "" if none. Be honest — an unstated age limit or a screening requirement belongs here.`;
+async function judgeMatches(candidates, loc, tal, supText, prefs) {
+  if (!candidates.length) return {};
+  const list = candidates.map((o, i) => `[${i}] ${o.title} — ${o.org}
+    what they'd do: ${(o.role || o.desc || "").slice(0, 260)}
+    commitment: ${o.commitment || o.hours || "unstated"} | where: ${o.where || "unstated"} | requirements: ${o.requirements || "none listed"}`).join("\n");
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 3000,
+    temperature: 0.1,
+    schema: JUDGE_SCHEMA,
+    messages: [{
+      role: "user",
+      content: `Score how well each candidate volunteer role fits this specific student. You did not write these candidates and you have no stake in them — reject the weak ones.
+
+STUDENT
+- Location: ${isGlobalLoc(loc.id) ? loc.label : loc.label + ", Canada"}
+- Interest areas: ${prefs.talLabels && prefs.talLabels.length ? prefs.talLabels.join(", ") : tal?.label || "unstated"}
+- Stated capabilities, with the level they claim: "${supText || "none given"}"
+${prefs.langTxt ? `- Languages: ${prefs.langTxt}` : ""}
+${prefs.detail ? `- In their own words: "${prefs.detail}"` : ""}
+${prefs.serveTxt ? `- Wants to serve: ${prefs.serveTxt}` : "- No population preference stated"}
+- Availability: ${prefs.timeTxt || "flexible"}
+- Setting: ${prefs.vibeTxt || "any"}${prefs.virtualOnly ? " (REMOTE ONLY — anything in-person scores 0 on logistics)" : ""}
+${prefs.vtypeTxt ? `- How they want to show up: ${prefs.vtypeTxt}` : ""}
+- Why they're doing it: ${prefs.whyTxt || "not stated — do not weight this"}
+
+CANDIDATES
+${list}
+
+${JUDGE_RUBRIC}
+
+Return one object per candidate, using the candidate's [index] as id.`
+    }]
+  }, 45000, 1);
+  const rows = extractJSON(res);
+  const out = {};
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const i = Number(r.id);
+    if (!candidates[i]) continue;
+    const cap = clamp(r.capability, 0, 40),
+      pop = clamp(r.population, 0, 20),
+      log = clamp(r.logistics, 0, 20),
+      cred = clamp(r.credibility, 0, 20);
+    out[i] = {
+      capability: cap,
+      population: pop,
+      logistics: log,
+      credibility: cred,
+      total: cap + pop + log + cred,
+      verdict: r.verdict || "good",
+      evidence: r.evidence || "",
+      concern: r.concern || ""
+    };
+  }
+  return out;
+}
+function clamp(n, lo, hi) {
+  n = Number(n);
+  if (!isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, Math.round(n)));
+}
+
+/* ── STAGE 4: blend ──
+   The deterministic scorer is noisy but never hallucinates; the judge is
+   sharp but can be talked into things. Neither gets the last word. */
+function blendScore(deterministic, judged) {
+  const det = Math.max(0, Math.min(100, Math.round(deterministic / 112 * 100)));
+  if (!judged) return {
+    score: det,
+    det,
+    ai: null
+  };
+  return {
+    score: Math.round(judged.total * 0.7 + det * 0.3),
+    det,
+    ai: judged.total
+  };
+}
+
+/* Ask the server to confirm each link actually resolves. Only works when the
+   proxy is deployed (a browser can't read cross-origin response codes), and
+   fails silently everywhere else — an unchecked link is shown as unchecked,
+   never as verified. */
+async function verifyLinks(urls) {
+  if (PROXY_STATE === "dead" || !urls.length) return {};
+  try {
+    const res = await fetch(PROXY_PATH, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        action: "verify",
+        urls: urls.slice(0, 24)
+      })
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data && data.results || {};
+  } catch (e) {
+    return {};
+  }
 }
 async function getInsight(opp, name, supText) {
   try {
     const data = await apiCall({
-      model: "claude-sonnet-4-6",
+      model: MODELS.fast,
+      system: SYS_MATCH,
       max_tokens: 200,
+      temperature: 0.4,
       messages: [{
         role: "user",
-        content: `In 2 sentences, explain why "${opp.title}" at ${opp.org} is a good match for a student whose stated capability is: "${supText.slice(0, 120)}". Name the specific part of the role that needs that capability. Write plainly and factually, like an advisor who knows the organization. No hype words, no exclamation marks, no jokes. Do not use the words delve, passionate, furthermore, or leverage.`
+        content: `In 2 sentences, explain why "${opp.title}" at ${opp.org} suits a student whose stated capability is: "${(supText || "").slice(0, 120)}". Name the specific part of the role that needs that capability. If the role honestly doesn't need it, say what it does offer them instead — do not oversell.`
       }]
     }, 8000, 0);
     const txt = data.content?.find(c => c.type === "text")?.text || "";
     if (txt) return txt;
   } catch (e) {}
   return templateInsight(name, opp, supText);
+}
+
+/* ── Outreach drafting ──
+   Turns a match into a first email the student can actually send. Written
+   to sound like a 16-year-old wrote it, because one did. */
+async function draftOutreach(opp, student) {
+  const name = (student.name || "").trim();
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: `You write short volunteer-enquiry emails as the STUDENT, in first person. You are 14-18 and you sound like it: direct, specific, a little plain. Never corporate, never gushing. No exclamation marks. Never claim experience, credentials, or availability the student did not state.`,
+    max_tokens: 420,
+    temperature: 0.6,
+    messages: [{
+      role: "user",
+      content: `Write an enquiry email for this volunteer role.
+
+ROLE: ${opp.title} at ${opp.org}
+WHAT IT INVOLVES: ${(opp.role || opp.desc || "").slice(0, 300)}
+${opp.firstStep ? `THEIR SUGGESTED FIRST STEP: ${opp.firstStep}` : ""}
+
+FROM: ${name || "a high-school student"}${student.city ? `, in ${student.city}` : ""}
+WHAT THEY CAN DO: ${student.skills || "not stated"}
+${student.langs ? `LANGUAGES THEY SPEAK: ${student.langs}` : ""}
+${student.detail ? `IN THEIR OWN WORDS: "${student.detail}"` : ""}
+TIME THEY HAVE: ${student.time || "flexible"}
+
+Rules:
+- First line must be exactly "Subject: ..." then a blank line, then the body.
+- Body is 90-130 words, four short paragraphs at most.
+- Say what specifically they can do and tie it to this role's actual duties.
+- Ask one concrete question (whether the role is open, and what the next step is).
+- Sign off with just their first name${name ? ` (${name.split(" ")[0]})` : ""}.
+- Do not invent grades, awards, hours already served, or references.
+- Do not upgrade their level. If they said they're still learning, the email says they're still learning and keen — that honesty is what gets a 15-year-old taken seriously, and overselling gets found out in week one.`
+    }]
+  }, 25000, 1);
+  return (res.content || []).find(c => c.type === "text")?.text || "";
 }
 // ── Contact email helpers ──
 // Only ever returns an email we actually have. Never fabricates one.
@@ -2891,6 +4272,886 @@ function Ring({
   }));
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   MATCH TRANSPARENCY
+
+   A number with no explanation is just decoration. These components
+   show the student exactly why a role ranked where it did, including
+   the parts the model was unsure about.
+═══════════════════════════════════════════════════════════════ */
+
+const VERDICTS = {
+  strong: {
+    label: "Strong match",
+    cls: "badge-green"
+  },
+  good: {
+    label: "Good match",
+    cls: "badge-fire"
+  },
+  weak: {
+    label: "Worth a look",
+    cls: "badge-neutral"
+  }
+};
+function verdictOf(opp) {
+  if (opp._judge && VERDICTS[opp._judge.verdict]) return opp._judge.verdict;
+  const s = opp._score || 0;
+  return s >= 72 ? "strong" : s >= 50 ? "good" : "weak";
+}
+const DIMS = [{
+  k: "capability",
+  max: 40,
+  label: "Needs your skill"
+}, {
+  k: "population",
+  max: 20,
+  label: "Who it serves"
+}, {
+  k: "logistics",
+  max: 20,
+  label: "Fits your schedule"
+}, {
+  k: "credibility",
+  max: 20,
+  label: "Confidence it's real"
+}];
+
+// Compact score dial. Colour tracks the verdict, not an arbitrary gradient.
+function ScoreDial({
+  score,
+  verdict,
+  size = 46
+}) {
+  const r = size / 2 - 4,
+    c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score || 0));
+  const col = verdict === "strong" ? "var(--success)" : verdict === "good" ? "var(--fire)" : "var(--ink-4)";
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      width: size,
+      height: size,
+      flexShrink: 0
+    },
+    title: `Match score ${pct} out of 100`
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    style: {
+      transform: "rotate(-90deg)"
+    },
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("circle", {
+    cx: size / 2,
+    cy: size / 2,
+    r: r,
+    fill: "none",
+    stroke: "var(--ink-6)",
+    strokeWidth: 4
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: size / 2,
+    cy: size / 2,
+    r: r,
+    fill: "none",
+    stroke: col,
+    strokeWidth: 4,
+    strokeDasharray: c,
+    strokeDashoffset: c - c * pct / 100,
+    strokeLinecap: "round",
+    style: {
+      transition: "stroke-dashoffset .7s cubic-bezier(.4,0,.2,1)"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      inset: 0,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: size > 40 ? 14 : 12,
+      fontWeight: 700,
+      color: col
+    }
+  }, pct));
+}
+
+// The breakdown behind the dial. Only rendered once the judge pass has
+// actually run — we never invent subscores to fill the panel.
+function ScoreBreakdown({
+  opp
+}) {
+  const j = opp._judge;
+  if (!j) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      padding: "12px 14px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10
+    }
+  }, DIMS.map(d => {
+    const v = j[d.k] || 0,
+      pct = Math.round(v / d.max * 100);
+    return /*#__PURE__*/React.createElement("div", {
+      key: d.k,
+      style: {
+        marginBottom: 9
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        fontSize: 11,
+        color: "var(--ink-2)",
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", null, d.label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "var(--ink-3)",
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, v, " / ", d.max)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        height: 4,
+        background: "var(--ink-6)",
+        borderRadius: 100,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        height: "100%",
+        width: pct + "%",
+        borderRadius: 100,
+        background: pct >= 70 ? "var(--success)" : pct >= 40 ? "var(--fire)" : "var(--ink-4)",
+        transition: "width .6s ease"
+      }
+    })));
+  }), j.concern && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      paddingTop: 10,
+      borderTop: "1px solid var(--ink-5)",
+      display: "flex",
+      gap: 7,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 12,
+    color: "var(--ink-4)",
+    style: {
+      flexShrink: 0,
+      marginTop: 2
+    }
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 2
+    }
+  }, "Worth knowing"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, j.concern))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      fontSize: 10.5,
+      color: "var(--ink-4)",
+      lineHeight: 1.5
+    }
+  }, "Scored against your profile", opp._detPct != null ? ` · keyword fit ${opp._detPct}/100` : "", ". Always check details with the organization."));
+}
+
+// Citation chips — the actual pages the search read. Shown only when the
+// provider returned grounding data, never fabricated from the org name.
+function SourceChips({
+  sources
+}) {
+  if (!sources || !sources.length) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      alignSelf: "center"
+    }
+  }, "Sources"), sources.map((s, i) => {
+    let host = s.title || "source";
+    try {
+      host = new URL(s.uri).hostname.replace(/^www\./, "");
+    } catch (e) {}
+    return /*#__PURE__*/React.createElement("a", {
+      key: i,
+      href: s.uri,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      title: s.title || s.uri,
+      style: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "3px 8px",
+        borderRadius: 6,
+        background: "var(--surface-up)",
+        border: "1px solid var(--ink-5)",
+        fontSize: 10.5,
+        color: "var(--ink-3)",
+        textDecoration: "none",
+        maxWidth: 190,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, /*#__PURE__*/React.createElement(ExternalLink, {
+      size: 9
+    }), host);
+  }));
+}
+
+/* ── Outreach drafting ──
+   The hardest part of volunteering at 15 isn't finding the role, it's
+   sending the first email. This writes a real first draft from the
+   student's own profile, then gets out of the way so they can edit it. */
+function OutreachModal({
+  opp,
+  student,
+  onClose
+}) {
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr("");
+    try {
+      const t = await draftOutreach(opp, student);
+      if (!t) throw new Error("empty");
+      setText(t);
+    } catch (e) {
+      setErr("Couldn't write a draft just now. Check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [opp, student]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  useEffect(() => {
+    const k = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+  const parts = splitPitch(text);
+  const to = contactEmailOf(opp);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (e) {}
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 300,
+      background: "rgba(12,9,6,.55)",
+      backdropFilter: "blur(3px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "Draft outreach email",
+    className: "card",
+    style: {
+      width: "100%",
+      maxWidth: 560,
+      maxHeight: "88vh",
+      overflow: "auto",
+      padding: 22,
+      background: "var(--surface)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 12,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 19,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.3px"
+    }
+  }, "Your first email"), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close",
+    className: "btn btn-ghost",
+    style: {
+      padding: 7,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 15
+  }))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginBottom: 16,
+      lineHeight: 1.6
+    }
+  }, "A starting point for ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: "var(--ink-2)"
+    }
+  }, opp.org), ". Edit it so it sounds like you — that matters more than getting it perfect."), loading ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      padding: "12px 0"
+    }
+  }, /*#__PURE__*/React.createElement(Shimmer, {
+    w: "50%",
+    h: 13
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "100%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "96%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "88%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "70%",
+    h: 11
+  })) : err ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--danger)",
+      marginBottom: 12
+    }
+  }, err), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: load,
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 13
+  }), " Try again")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    value: text,
+    onChange: e => setText(e.target.value),
+    "aria-label": "Email draft",
+    style: {
+      minHeight: 260,
+      resize: "vertical",
+      lineHeight: 1.7,
+      fontSize: 13
+    }
+  }), !to && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)",
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "We don't have a verified address for this organization, so we won't guess one. Find the real contact on their site, then paste this in."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      marginTop: 14
+    }
+  }, to && /*#__PURE__*/React.createElement("a", {
+    className: "btn btn-fire",
+    href: gmailComposeUrl(to, parts.subject, parts.body),
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5,
+      textDecoration: "none"
+    }
+  }, /*#__PURE__*/React.createElement(Mail, {
+    size: 13
+  }), " Open in Gmail"), to && /*#__PURE__*/React.createElement("a", {
+    className: "btn btn-ghost",
+    href: `mailto:${to}?subject=${encodeURIComponent(parts.subject)}&body=${encodeURIComponent(parts.body)}`,
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5,
+      textDecoration: "none"
+    }
+  }, "Mail app"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: copy,
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5
+    }
+  }, copied ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Check, {
+    size: 13
+  }), " Copied") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Copy, {
+    size: 13
+  }), " Copy")), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: load,
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5
+    }
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 13
+  }), " Rewrite")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10.5,
+      color: "var(--ink-4)",
+      marginTop: 12,
+      lineHeight: 1.6
+    }
+  }, "Read it before you send. Don't claim anything you haven't actually done."))));
+}
+
+/* Live engine status during the search. Shows what is genuinely running
+   rather than a spinner that means nothing. */
+const ENGINE_STATE_UI = {
+  running: {
+    icon: Loader,
+    cls: "spin",
+    color: "var(--fire)",
+    text: "searching"
+  },
+  done: {
+    icon: CheckCircle,
+    cls: "",
+    color: "var(--success)",
+    text: "found matches"
+  },
+  empty: {
+    icon: Check,
+    cls: "",
+    color: "var(--ink-4)",
+    text: "nothing new"
+  },
+  failed: {
+    icon: AlertCircle,
+    cls: "",
+    color: "var(--ink-4)",
+    text: "unavailable"
+  }
+};
+function EngineProgress({
+  engines,
+  state
+}) {
+  const rows = engines.filter(e => state[e.id]);
+  if (!rows.length) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 320,
+      margin: "0 auto",
+      textAlign: "left",
+      display: "flex",
+      flexDirection: "column",
+      gap: 9
+    },
+    "aria-live": "polite"
+  }, rows.map(e => {
+    const st = ENGINE_STATE_UI[state[e.id]] || ENGINE_STATE_UI.running;
+    const Icon = st.icon;
+    return /*#__PURE__*/React.createElement("div", {
+      key: e.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        fontSize: 12,
+        color: state[e.id] === "running" ? "var(--ink-2)" : "var(--ink-3)"
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      size: 12,
+      color: st.color,
+      className: st.cls
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, e.label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10.5,
+        color: "var(--ink-4)",
+        flexShrink: 0
+      }
+    }, st.text));
+  }));
+}
+
+/* Sort + filter bar for the results list. Nothing here calls the network —
+   it re-orders what the student already has. */
+function ResultControls({
+  sortBy,
+  setSortBy,
+  minVerdict,
+  setMinVerdict,
+  counts,
+  judged
+}) {
+  const Btn = ({
+    active,
+    onClick,
+    children
+  }) => /*#__PURE__*/React.createElement("button", {
+    onClick: onClick,
+    "aria-pressed": active,
+    style: {
+      padding: "6px 11px",
+      borderRadius: 8,
+      border: "1.5px solid " + (active ? "var(--fire)" : "var(--ink-5)"),
+      background: active ? "var(--ember)" : "transparent",
+      color: active ? "var(--fire)" : "var(--ink-3)",
+      fontSize: 11.5,
+      fontWeight: active ? 600 : 500,
+      cursor: "pointer",
+      fontFamily: "inherit"
+    }
+  }, children);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14,
+      alignItems: "center",
+      padding: "12px 0 18px",
+      borderTop: "1px solid var(--ink-6)",
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Sort"), /*#__PURE__*/React.createElement(Btn, {
+    active: sortBy === "match",
+    onClick: () => setSortBy("match")
+  }, "Best match"), /*#__PURE__*/React.createElement(Btn, {
+    active: sortBy === "time",
+    onClick: () => setSortBy("time")
+  }, "Least time"), /*#__PURE__*/React.createElement(Btn, {
+    active: sortBy === "confidence",
+    onClick: () => setSortBy("confidence")
+  }, "Most certain")), judged && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Show"), /*#__PURE__*/React.createElement(Btn, {
+    active: minVerdict === "all",
+    onClick: () => setMinVerdict("all")
+  }, "All"), /*#__PURE__*/React.createElement(Btn, {
+    active: minVerdict === "good",
+    onClick: () => setMinVerdict("good")
+  }, "Good+ (", counts.good, ")"), /*#__PURE__*/React.createElement(Btn, {
+    active: minVerdict === "strong",
+    onClick: () => setMinVerdict("strong")
+  }, "Strong (", counts.strong, ")")));
+}
+
+/* Honest status about where these results came from. The previous build
+   silently served the offline library whenever the AI failed, which is why
+   every search returned the same things — this says so out loud. */
+function useAIHealth() {
+  const [h, setH] = useState({
+    state: AI_HEALTH.state,
+    detail: AI_HEALTH.detail
+  });
+  useEffect(() => onAIHealth(x => setH({
+    state: x.state,
+    detail: x.detail
+  })), []);
+  return h;
+}
+function AIStatusNotice({
+  health,
+  onOpenSettings
+}) {
+  if (health.state === "live" || health.state === "unknown") return null;
+  const quota = health.state === "quota";
+  // "nosearch" is a partial outage, not a failure: the AI is still matching
+  // against the profile, it just can't read the live web. Saying "these are
+  // starting points" there would be wrong and would undersell real results.
+  if (health.state === "nosearch") {
+    return /*#__PURE__*/React.createElement("div", {
+      role: "status",
+      style: {
+        padding: "10px 14px",
+        background: "var(--surface-up)",
+        border: "1px solid var(--ink-5)",
+        borderRadius: 10,
+        marginBottom: 18,
+        display: "flex",
+        gap: 9,
+        alignItems: "flex-start",
+        fontSize: 12,
+        color: "var(--ink-2)",
+        lineHeight: 1.6
+      }
+    }, /*#__PURE__*/React.createElement(Search, {
+      size: 13,
+      color: "var(--ink-4)",
+      style: {
+        flexShrink: 0,
+        marginTop: 2
+      }
+    }), /*#__PURE__*/React.createElement("span", null, "These are matched to your profile, but live web search isn't available on this key \u2014 so they come from what the AI already knows rather than today's listings. Check each organization's own site before you email them."));
+  }
+  return /*#__PURE__*/React.createElement("div", {
+    role: "status",
+    style: {
+      padding: "12px 15px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderLeft: "3px solid var(--fire)",
+      borderRadius: 10,
+      marginBottom: 18,
+      display: "flex",
+      gap: 10,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 14,
+    color: "var(--fire)",
+    style: {
+      flexShrink: 0,
+      marginTop: 2
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 3
+    }
+  }, "These are starting points, not live matches"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, health.detail || "Live search is unavailable right now.", " ", "You're seeing the built-in library of real organizations instead — good places to start, but not tailored to what you specifically said.", quota && onOpenSettings ? /*#__PURE__*/React.createElement(React.Fragment, null, " ", /*#__PURE__*/React.createElement("button", {
+    onClick: onOpenSettings,
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 12,
+      textDecoration: "underline"
+    }
+  }, "Add your own free AI key"), " to turn live matching back on.") : null)));
+}
+
+/* Lets a student restore live matching without editing HTML. Their key is
+   stored in this browser only and never sent anywhere except Google. */
+function AIKeyModal({
+  onClose,
+  onSaved
+}) {
+  const [k, setK] = useState(() => {
+    try {
+      return localStorage.getItem("rise_gemini_key") || "";
+    } catch (e) {
+      return "";
+    }
+  });
+  useEffect(() => {
+    const h = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 300,
+      background: "rgba(12,9,6,.55)",
+      backdropFilter: "blur(3px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "Add an AI key",
+    className: "card",
+    style: {
+      width: "100%",
+      maxWidth: 470,
+      padding: 22,
+      background: "var(--surface)"
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 19,
+      fontWeight: 400,
+      color: "var(--ink)",
+      marginBottom: 8
+    }
+  }, "Turn live matching back on"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      marginBottom: 6
+    }
+  }, "RISE ships with a shared free AI key, and everyone using this build draws on the same daily allowance — so it usually runs out. A free key of your own takes about a minute and is yours alone."), /*#__PURE__*/React.createElement("ol", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.9,
+      paddingLeft: 18,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("li", null, "Open ", /*#__PURE__*/React.createElement("a", {
+    href: "https://aistudio.google.com/apikey",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      color: "var(--fire)",
+      fontWeight: 600
+    }
+  }, "aistudio.google.com/apikey")), /*#__PURE__*/React.createElement("li", null, "Click ", /*#__PURE__*/React.createElement("strong", null, "Create API key"), ". No credit card needed."), /*#__PURE__*/React.createElement("li", null, "Paste it below.")), /*#__PURE__*/React.createElement("input", {
+    className: "input",
+    type: "password",
+    value: k,
+    onChange: e => setK(e.target.value),
+    // Not "AIza…" — in DM Sans a capital I is identical to a lowercase l, so the
+    // real key prefix reads as "Alza" and looks like a typo.
+    placeholder: "Paste your key here",
+    "aria-label": "Your Google AI Studio API key",
+    autoComplete: "off",
+    spellCheck: "false"
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)",
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "Stored in this browser only. It never reaches RISE's servers — requests go straight from your device to Google."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginTop: 16,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    },
+    onClick: () => {
+      setGeminiKey(k);
+      onSaved && onSaved();
+      onClose();
+    }
+  }, "Save and retry"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    },
+    onClick: onClose
+  }, "Not now"), k && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      padding: "10px 18px",
+      fontSize: 13,
+      marginLeft: "auto"
+    },
+    onClick: () => {
+      setK("");
+      setGeminiKey("");
+    }
+  }, "Clear"))));
+}
+
+// Parse "2-3 hrs/week" style strings into a number, for the "least time" sort.
+function hoursNum(o) {
+  const m = String(o.hours || o.commitment || "").match(/(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : 99;
+}
+
 /* ═══════════════════════════════════════
    RESULT CARD
 ═══════════════════════════════════════ */
@@ -2903,9 +5164,13 @@ function ResultCard({
   isFav,
   onFav,
   studentName,
-  studentSkills
+  studentSkills,
+  student
 }) {
   const [copied, setCopied] = useState(false);
+  const [showWhy, setShowWhy] = useState(false);
+  const [showDraft, setShowDraft] = useState(false);
+  const verdict = verdictOf(opp);
   async function share() {
     const msg = `Found this volunteer spot: ${opp.title} at ${opp.org}. Come with me? ${opp.link}`;
     try {
@@ -2970,24 +5235,44 @@ function ResultCard({
       marginBottom: 10,
       flexWrap: "wrap"
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  },
+  // Restored sessions have no talent in state — don't render an empty pill.
+  talLabel && /*#__PURE__*/React.createElement("span", {
     className: "badge badge-fire"
-  }, talLabel), opp._score != null && opp._score >= 55 &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("span", {
-    className: "badge badge-green"
-  }, "Strong match"), opp._score != null && opp._score >= 30 && opp._score < 55 &&
-  /*#__PURE__*/
+  }, talLabel), opp._score != null &&
   /*#__PURE__*/
   React.createElement("span", {
-    className: "badge badge-neutral"
-  }, "Good match"), /^https?:/.test(opp.link || "") && isWeb &&
-  /*#__PURE__*/
+    className: "badge " + VERDICTS[verdict].cls
+  }, VERDICTS[verdict].label),
+  // Only claim a link is checked when the server actually checked it.
+  opp._linkOk === true &&
   /*#__PURE__*/
   React.createElement("span", {
-    className: "badge badge-neutral"
-  }, "Live link")), /*#__PURE__*/React.createElement("h3", {
+    className: "badge badge-green",
+    title: "We loaded this link and it responded"
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 9
+  }), "\xA0Link verified"), opp._linkOk === false &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-neutral",
+    title: "This link didn't respond when we checked it"
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 9
+  }), "\xA0Link didn't load"), opp._origin === "web" &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-neutral",
+    title: "Found by searching the web just now"
+  }, "From live search"),
+  // Curated entries are real organizations but broad by design — say so rather
+  // than letting them pass as something tailored to this student.
+  opp._curated &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-neutral",
+    title: "A real organization from our built-in list — not tailored to your answers"
+  }, "Starting point")), /*#__PURE__*/React.createElement("h3", {
     className: "serif",
     style: {
       fontSize: 20,
@@ -3005,22 +5290,24 @@ function ResultCard({
     }
   }, opp.org)), /*#__PURE__*/React.createElement("div", {
     style: {
-      width: 34,
-      height: 34,
-      borderRadius: 10,
-      background: "var(--ember)",
       display: "flex",
+      flexDirection: "column",
       alignItems: "center",
-      justifyContent: "center",
+      gap: 3,
       flexShrink: 0
     }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "serif",
+  }, /*#__PURE__*/React.createElement(ScoreDial, {
+    score: opp._score,
+    verdict: verdict
+  }), /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 15,
-      color: "var(--fire)"
+      fontSize: 9,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".08em"
     }
-  }, idx + 1))), opp.tagline &&
+  }, "Match"))), opp.tagline &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("p", {
@@ -3110,8 +5397,10 @@ function ResultCard({
       textTransform: "uppercase",
       letterSpacing: ".1em"
     }
-  }, "Why this fits you")), opp.whyMatch || insight ?
-  /*#__PURE__*/
+  }, "Why this fits you")),
+  // The judge's evidence line replaces the generator's own pitch once it lands,
+  // because it names the duty rather than selling the role.
+  insight || opp.whyMatch ?
   /*#__PURE__*/
   React.createElement("p", {
     style: {
@@ -3120,7 +5409,7 @@ function ResultCard({
       lineHeight: 1.8,
       fontStyle: "italic"
     }
-  }, opp.whyMatch || insight) :
+  }, insight || opp.whyMatch) :
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -3135,7 +5424,42 @@ function ResultCard({
   }), /*#__PURE__*/React.createElement(Shimmer, {
     w: "64%",
     h: 11
-  }))), /*#__PURE__*/React.createElement("div", {
+  }))),
+  // Scoring transparency: the breakdown is opt-in so the card stays calm,
+  // but it's one tap away and shows the parts the model was unsure about.
+  opp._judge &&
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowWhy(v => !v),
+    "aria-expanded": showWhy,
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 5,
+      background: "none",
+      border: "none",
+      padding: "2px 0",
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--fire)"
+    }
+  }, /*#__PURE__*/React.createElement(ChevronRight, {
+    size: 11,
+    style: {
+      transform: showWhy ? "rotate(90deg)" : "none",
+      transition: "transform .18s"
+    }
+  }), showWhy ? "Hide scoring" : "How this was scored"), showWhy && /*#__PURE__*/React.createElement(ScoreBreakdown, {
+    opp: opp
+  })), /*#__PURE__*/React.createElement(SourceChips, {
+    sources: opp._sources
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 16,
@@ -3317,7 +5641,29 @@ function ResultCard({
     onMouseLeave: e => e.currentTarget.style.opacity = "1"
   }, "Visit ", host, " ", /*#__PURE__*/React.createElement(ExternalLink, {
     size: 11
-  })), /*#__PURE__*/React.createElement("div", {
+  })),
+  // Writing the first email is the step most students stall on, so it gets a
+  // button of its own rather than living in a menu.
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => setShowDraft(true),
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "9px 14px",
+      background: "var(--ember)",
+      color: "var(--fire)",
+      border: "1.5px solid var(--ember-bd)",
+      borderRadius: 8,
+      fontSize: 12.5,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit"
+    }
+  }, /*#__PURE__*/React.createElement(Sparkles, {
+    size: 12
+  }), " Draft my email"), /*#__PURE__*/React.createElement("div", {
     style: {
       marginLeft: "auto",
       display: "flex",
@@ -3364,7 +5710,14 @@ function ResultCard({
       fontFamily: "'DM Sans', sans-serif",
       transition: "all .15s"
     }
-  }, copied ? "Copied!" : "Share")))));
+  }, copied ? "Copied!" : "Share")))), showDraft && /*#__PURE__*/React.createElement(OutreachModal, {
+    opp: opp,
+    student: student || {
+      name: studentName,
+      skills: studentSkills
+    },
+    onClose: () => setShowDraft(false)
+  }));
 }
 
 /* ═══════════════════════════════════════
@@ -3596,12 +5949,15 @@ function SignInModal({
   if (!open) return null;
   const friendly = e => {
     const c = e?.code || "";
+    const m = e?.message || "";
     if (c.includes("invalid-email")) return "That email doesn't look right.";
     if (c.includes("weak-password")) return "Password needs at least 6 characters.";
-    if (c.includes("email-already-in-use")) return "That email already has an account - try signing in.";
+    if (c.includes("email-already-in-use")) return "That email already has an account - try logging in.";
     if (c.includes("invalid-credential") || c.includes("wrong-password") || c.includes("user-not-found")) return "Email or password is incorrect.";
     if (c.includes("popup-closed")) return "";
-    return e?.message || "Something went wrong - try again.";
+    // Raw browser fetch failures -> actionable message
+    if (/load failed|failed to fetch|networkerror/i.test(m)) return "Couldn't reach the sign-in server. Your Supabase project may be paused (free projects pause after ~1 week idle) - open the Supabase dashboard and resume it, then try again.";
+    return m || "Something went wrong - try again.";
   };
   const run = async fn => {
     setErr("");
@@ -4049,7 +6405,7 @@ function HomePage({
       letterSpacing: ".12em",
       marginBottom: 24
     }
-  }, "Youth Volunteering · Canada"), /*#__PURE__*/React.createElement("h1", {
+  }, "Born in Canada. Reaching the world."), /*#__PURE__*/React.createElement("h1", {
     className: "fu1 serif",
     style: {
       fontSize: "clamp(50px,6vw,82px)",
@@ -4072,7 +6428,7 @@ function HomePage({
       maxWidth: 400,
       marginBottom: 32
     }
-  }, "Every young person has something to offer. RISE connects your specific talents to the communities that need exactly that."), /*#__PURE__*/React.createElement("div", {
+  }, "Every young person has something to offer. RISE matches what you can actually do to the people who need exactly that — down the street or on the other side of the world."), /*#__PURE__*/React.createElement("div", {
     className: "fu3",
     style: {
       display: "flex",
@@ -4130,12 +6486,12 @@ function HomePage({
       color: "color-mix(in srgb, var(--canvas) 92%, transparent)",
       marginBottom: 2
     }
-  }, "Cities across Canada"), /*#__PURE__*/React.createElement("div", {
+  }, "Cities, worldwide"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: "color-mix(in srgb, var(--canvas) 60%, transparent)"
     }
-  }, "From Vancouver to Halifax"))), /*#__PURE__*/React.createElement("div", {
+  }, "Start where you are, serve anywhere"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -4147,9 +6503,9 @@ function HomePage({
     l: "Talent categories",
     s: "Music, sports & more"
   }, {
-    n: "Canada-wide",
-    l: "Hours tracker",
-    s: "Hit your service goal in any province or territory"
+    n: "Global",
+    l: "Serve from anywhere",
+    s: "In your neighbourhood, or remotely for a cause across the world"
   }].map((s, i) =>
   /*#__PURE__*/
   /*#__PURE__*/
@@ -4199,7 +6555,7 @@ function HomePage({
       fontSize: 12,
       color: "var(--ink-2)"
     }
-  }, "Matched to your specific talent - not just any volunteer slot")))), /*#__PURE__*/React.createElement("div", {
+  }, "Matched to a real role that needs your specific skill - not a list of ideas")))), /*#__PURE__*/React.createElement("div", {
     className: "marquee-wrap",
     style: {
       borderTop: "1px solid var(--ink-5)",
@@ -4220,7 +6576,7 @@ function HomePage({
       alignItems: "center",
       flexShrink: 0
     }
-  }, ["60+ Canadian cities", "Matched to your talent", "Free forever", "Built by students", "Ontario OSSD ready", "Music · Sports · Education", "Real community impact"].map((t, i) =>
+  }, ["Born in Canada · Reaching the world", "Matched to your talent", "Free forever", "Built by students", "Local or remote", "Music · Sports · Education", "Real community impact"].map((t, i) =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("span", {
@@ -4759,6 +7115,14 @@ function MatcherPage({
   const [time, setTime] = useState("");
   const [vibe, setVibe] = useState("");
   const [serve, setServe] = useState([]);
+  // VIC dimensions: how they want to show up, and why they're doing this.
+  const [vtype, setVtype] = useState("");
+  const [why, setWhy] = useState([]);
+  // Proficiency per selected capability: { "music-a": "advanced" }
+  const [capLevels, setCapLevels] = useState({});
+  // Languages: { Arabic: "native", French: "conv" }
+  const [langs, setLangs] = useState({});
+  const [langOpen, setLangOpen] = useState(false);
   const [detail, setDetail] = useState("");
   const [savedProfile] = useStorage("rise_profile", {
     interests: []
@@ -4773,13 +7137,25 @@ function MatcherPage({
   const [loadingMore, setLM] = useState(false);
   const [moreError, setMoreErr] = useState("");
   const seenOrgs = useRef(new Set());
+  // Live per-engine status, so the wait shows real work instead of a spinner.
+  const [engineState, setEngineState] = useState({});
+  const [judging, setJudging] = useState(false);
+  const [sortBy, setSortBy] = useState("match");
+  const [minVerdict, setMinVerdict] = useState("all");
+  const searchRun = useRef(0);
+  const loadMoreTurn = useRef(0);
+  // Persisted so reloading the page doesn't reset everyone to the same opening
+  // search angle.
+  const angleRef = useRef(Number(localStorage.getItem("rise_angle") || 0));
+  const aiHealth = useAIHealth();
+  const [showKey, setShowKey] = useState(false);
 
   // Restore: if matches were saved (locally or to their account), show them
   // again and rebuild the dedupe set so Load More never repeats an org.
   useEffect(() => {
     if (resultsLoaded && results.length > 0) {
       results.forEach(o => {
-        const k = (o.org || "").toLowerCase().trim().replace(/\s+/g, " ");
+        const k = orgKey(o.org);
         if (k) seenOrgs.current.add(k);
       });
       setStep(s => s === "name" ? "results" : s);
@@ -4802,18 +7178,39 @@ function MatcherPage({
     const [tid, sid] = capId.split("-");
     return ((SUPERPOWERS[tid] || []).find(s => s.id === sid) || {}).label;
   }).filter(Boolean);
-  const spTxt = capLabels.join("; ");
+  // Each capability carries its stated level, so the engines can tell a
+  // beginner apart from someone who's competed — the prompts always assumed
+  // they could, and until now there was nothing behind that assumption.
+  const spTxt = caps.map(capId => {
+    const [tid, sid] = capId.split("-");
+    const label = ((SUPERPOWERS[tid] || []).find(s => s.id === sid) || {}).label;
+    if (!label) return "";
+    const lvl = LEVEL_LABEL(capLevels[capId]);
+    return lvl ? `${label} [level: ${lvl}]` : label;
+  }).filter(Boolean).join("; ");
+  const langTxt = Object.keys(langs).filter(l => langs[l]).map(l => `${l} (${(LANG_LEVELS.find(x => x.id === langs[l]) || {}).label || ""})`).join(", ");
   const prefs = {
     timeTxt: (typeof TIME_OPTS !== "undefined" ? TIME_OPTS.find(t => t.id === time)?.label : "") || "",
     vibeTxt: (typeof VIBE_OPTS !== "undefined" ? VIBE_OPTS.find(v => v.id === vibe)?.label : "") || "",
     serveTxt: (serve || []).filter(id => id !== "any").map(id => (SERVE_OPTS.find(o => o.id === id) || {}).label).filter(Boolean).join(", "),
+    vtypeTxt: (VTYPE_OPTS.find(v => v.id === vtype) || {}).label || "",
+    langTxt,
+    whyTxt: (why || []).map(id => (WHY_OPTS.find(o => o.id === id) || {}).label).filter(Boolean).join("; "),
+    why: why || [],
+    // Where they actually live, which stays Canada even when serving abroad.
+    homeLabel: isGlobalLoc(location) ? "Canada" : (ALL_LOCS.find(l => l.id === location) || {}).label || "Canada",
     serve: serve || [],
     caps: caps || [],
     talents: talents || [],
     interests: savedProfile && savedProfile.interests || [],
     talLabels,
+    // Their stated capability in words — the specificity gate checks that a
+    // result's stated reason actually references it.
+    capText: [capLabels.join(" "), detail || ""].join(" ").trim(),
     detail: detail || "",
-    virtualOnly: vibe === "virtual",
+    // Remote is decided by how they want to show up, or by picking the remote
+    // location — never by the setting question, which no longer asks it.
+    virtualOnly: vtype === "homunteer" || location === "virtual",
     locShort: (ALL_LOCS.find(l => l.id === location) || {}).short || ""
   };
   const pSteps = ["name", "location", "talent", "superpower", "prefs"];
@@ -4832,18 +7229,23 @@ function MatcherPage({
     // 1. Validate + dedupe against everything already shown this search.
     const valid = (arr || []).filter(o => {
       if (!o || !o.org || !o.title || !/^https:\/\//.test(o.link || "")) return false;
-      const k = (o.org || "").toLowerCase().trim().replace(/\s+/g, " ");
+      const k = orgKey(o.org);
       const hk = hostOf(o.link);
       if (!k || seenOrgs.current.has(k) || hk && seenOrgs.current.has("host:" + hk)) return false;
       seenOrgs.current.add(k);
       if (hk) seenOrgs.current.add("host:" + hk);
       return true;
     });
-    // 2. Deterministic scoring against the full multi-select profile.
+    // 2. Deterministic scoring against the full multi-select profile. This is
+    //    the provisional order — good enough to paint immediately, and it is
+    //    what we fall back to if the judge pass never lands.
     const ranked = rankMatches(valid, prefs, {
       min: 12
-    });
-    if (!ranked.length) return 0;
+    }).map(o => Object.assign(o, {
+      _det: o._score,
+      _score: Math.round(Math.min(100, o._score / 112 * 100))
+    }));
+    if (!ranked.length) return [];
     // 3. Merge into results IN SCORE ORDER so the strongest match is always #1,
     //    even as later web-search batches arrive.
     setResults(prev => {
@@ -4858,35 +7260,149 @@ function MatcherPage({
           [oppKey(opp)]: opp.whyMatch
         }));
       } else {
-        queueInsight(() => getInsight(opp, name, spTxt).then(t => setInsights(p => ({
+        /* No paid call here, ever. Web results already carry whyMatch, and the
+           judge pass overwrites it with sharper evidence a moment later — so a
+           per-card API call was buying a blurb that gets thrown away. It was
+           also the single biggest hidden cost in the old design: one request
+           per result, per search. */
+        setInsights(p => ({
           ...p,
-          [oppKey(opp)]: t
-        }))));
+          [oppKey(opp)]: templateInsight(name, opp, spTxt)
+        }));
       }
     }
-    return ranked.length;
+    return ranked;
   }, [name, spTxt, prefs]);
+
+  /* STAGE 3+4 — the judge pass.
+     Runs once the discovery engines have settled, over everything on screen at
+     once so the model calibrates against the real field. Scores are merged back
+     in place by key; a candidate the judge rejects is dropped, and a judge that
+     fails outright leaves the deterministic order untouched. */
+  const runJudge = useCallback(async (run, batch) => {
+    const pool = (batch || []).filter(o => o && o.org);
+    if (pool.length < 2) return;
+    setJudging(true);
+    try {
+      const verdicts = await judgeMatches(pool, loc || {
+        label: location
+      }, tal, spTxt, prefs);
+      if (searchRun.current !== run) return; // a newer search superseded this one
+      const byKey = {};
+      pool.forEach((o, i) => {
+        if (verdicts[i]) byKey[oppKey(o)] = verdicts[i];
+      });
+      if (!Object.keys(byKey).length) return;
+      setResults(prev => {
+        const next = [];
+        for (const o of prev) {
+          const j = byKey[oppKey(o)];
+          if (!j) {
+            next.push(o);
+            continue;
+          }
+          if (j.verdict === "reject") continue; // the judge doesn't believe this one
+          const b = blendScore(o._det != null ? o._det : o._score, j);
+          next.push(Object.assign({}, o, {
+            _score: b.score,
+            _detPct: b.det,
+            _aiScore: b.ai,
+            _judge: j
+          }));
+        }
+        next.sort((a, b) => (b._score || 0) - (a._score || 0));
+        return next;
+      });
+      // The judge's evidence line is sharper than the generator's own pitch,
+      // so it replaces the insight text where we have one.
+      setInsights(p => {
+        const n = {
+          ...p
+        };
+        for (const k in byKey) if (byKey[k].evidence) n[k] = byKey[k].evidence;
+        return n;
+      });
+    } catch (e) {/* deterministic order stands */} finally {
+      setJudging(false);
+    }
+  }, [loc, tal, spTxt, prefs, location]);
+
+  // Server-side link check. No-ops without the proxy; a link we could not check
+  // is marked unchecked, never verified.
+  const runVerify = useCallback(async (run, batch) => {
+    const urls = (batch || []).map(o => o.link).filter(Boolean);
+    if (!urls.length) return;
+    const map = await verifyLinks(urls);
+    if (searchRun.current !== run || !Object.keys(map).length) return;
+    setResults(prev => prev.map(o => map[o.link] ? Object.assign({}, o, {
+      _linkOk: map[o.link].ok
+    }) : o));
+  }, []);
+  /* One grounded pass, or two recall passes if web search isn't available.
+
+     The old build ran all four of these every time. On a metered account that
+     is four web-search bills for heavily overlapping output — the same three
+     organizations found by four routes — and it made every search slower for
+     no gain. Rigour comes from the judge below, not from asking four times. */
+  const WEB_ENGINE = {
+    id: "web",
+    label: "Searching live listings",
+    fn: ex => webSearchOpps(talent, location, spTxt, prefs, ex, {
+      count: 5,
+      maxUses: 3,
+      angle: angleRef.current
+    }),
+    delay: 0
+  };
+  const RECALL_ENGINES = [{
+    id: "local",
+    label: `Organizations in ${loc?.short || "your area"}`,
+    fn: ex => aiOppsLocal(talent, location, spTxt, prefs, ex),
+    delay: 0
+  }, {
+    id: "national",
+    label: "National programs",
+    fn: ex => aiOppsNational(talent, location, spTxt, prefs, ex),
+    delay: 700
+  }];
+  const EXACT_ENGINE = {
+    id: "exact",
+    label: "Exact-skill search",
+    fn: ex => webSearchExact(talent, location, spTxt, prefs, ex),
+    delay: 0
+  };
+  // Web search only exists behind the proxy. Everywhere else, fall back to
+  // recall so the student still gets matched rather than nothing.
+  const canSearch = PROXY_STATE !== "dead";
+  const ENGINES = canSearch ? [WEB_ENGINE] : RECALL_ENGINES;
   function runSearch() {
+    const run = ++searchRun.current;
+    // Rotate the opening search angle so pressing search again explores new
+    // ground rather than re-asking the same question.
+    angleRef.current = (angleRef.current + 1) % 4;
+    try {
+      localStorage.setItem("rise_angle", String(angleRef.current));
+    } catch (e) {}
     setError("");
     setResults([]);
     setInsights({});
     setMoreErr("");
+    setJudging(false);
+    setSortBy("match");
+    setMinVerdict("all");
     seenOrgs.current = new Set();
     go("searching");
-    // Stale-while-revalidate: same search as before? Show those results NOW,
-    // then let the engines refresh and stack new finds behind them.
-    const cacheKey = "rise_cache::" + [talent, location, prefs.timeTxt, prefs.vibeTxt].join("|");
-    let hadCache = false;
+    /* No result prefill.
+
+       This used to replay the last run's saved matches while the engines
+       worked, which made a repeat search look instantaneous — and identical.
+       Combined with the response caches below it, that was the whole reason
+       the same handful of organizations came back every single time. Pressing
+       search now means a search actually happens. */
     try {
-      const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
-      if (Array.isArray(cached) && cached.length) {
-        hadCache = true;
-        setTimeout(() => {
-          addBatch(cached);
-        }, 350);
-      }
+      Object.keys(localStorage).filter(k => k.startsWith("rise_cache::")).forEach(k => localStorage.removeItem(k));
     } catch (e) {}
-    const msgs = [`Matching you in ${loc?.short || location}...`, "Scoring real organizations against your skills...", "Searching the web for live openings...", "Ranking your best matches..."];
+    const msgs = [`Matching you in ${loc?.short || location}...`, "Scoring real organizations against your skills...", "Searching the web for live openings...", "Weighing each role against what you can do..."];
     let mi = 0;
     setMsg(msgs[0]);
     const iv = setInterval(() => {
@@ -4903,67 +7419,134 @@ function MatcherPage({
       }
     };
 
-    // STEP 1 - INSTANT: score the real curated library across ALL selected
+    // STAGE 0 - INSTANT: score the real curated library across ALL selected
     // talents and show the strongest matches immediately. This is the reliable
     // floor: real orgs, real links, ranked by fit. No waiting on the network.
-    const libCandidates = libraryCandidates(prefs.talents, loc?.short || location);
+    const collected = [];
+    // Remote, or a region outside Canada, means the local library is the wrong
+    // shelf entirely — reach for the global one.
+    const useGlobal = prefs.virtualOnly || isGlobalLoc(location);
+    const libCandidates = libraryCandidates(prefs.talents, loc?.short || location, {
+      global: useGlobal
+    });
     setTimeout(() => {
-      addBatch(libCandidates);
+      collected.push(...addBatch(libCandidates));
       reveal();
     }, 250);
 
-    // STEP 2 - ENRICH: web-search engines find LIVE, specific roles and merge in
-    // by score behind the instant floor. The scorer keeps the best on top.
+    // STAGE 1 - DISCOVER: four engines with different strategies. Each reports
+    // its own state so the waiting screen shows what is actually happening.
     const delay = ms => new Promise(r => setTimeout(r, ms));
-    const engines = isOnline ? [webSearchOpps(talent, location, spTxt, prefs), delay(500).then(() => webSearchExact(talent, location, spTxt, prefs)), delay(1100).then(() => aiOppsLocal(talent, location, spTxt, prefs)), delay(1700).then(() => aiOppsNational(talent, location, spTxt, prefs))] : [];
+    // Request budget. The free Gemini tier allows 5 calls a minute, so on that
+    // path we run the two engines that pull in the most distinct results and
+    // save the remaining budget for the judge. With a proxy or an Anthropic
+    // key, all four run.
+    // ENGINES is already the right shape for this transport — one grounded pass
+    // behind the proxy, or the recall pair without it. On the constrained free
+    // key, drop to a single recall pass so one search can't burn the daily cap.
+    const active = isConstrained() ? ENGINES.slice(0, 1) : ENGINES;
+    const init = {};
+    active.forEach(e => init[e.id] = "running");
+    setEngineState(isOnline ? init : {});
+    const engines = isOnline ? active.map(e => delay(e.delay).then(() => e.fn("")).then(arr => {
+      if (searchRun.current !== run) return [];
+      const added = addBatch(arr);
+      collected.push(...added);
+      setEngineState(s => ({
+        ...s,
+        [e.id]: added.length ? "done" : "empty"
+      }));
+      return added;
+    }).catch(() => {
+      setEngineState(s => ({
+        ...s,
+        [e.id]: "failed"
+      }));
+      return [];
+    })) : [];
     setPending(engines.length);
-    engines.forEach(p => p.then(arr => {
-      addBatch(arr);
-    }).catch(() => {}).finally(() => setPending(n => n - 1)));
+    engines.forEach(p => p.finally(() => setPending(n => n - 1)));
 
     // SAFETY NET: if even the library somehow produced nothing, force reveal.
-    const net = setTimeout(() => {
-      reveal();
-    }, 3000);
+    const net = setTimeout(reveal, 3000);
     if (engines.length) {
       safeAllSettled(engines).then(() => {
+        if (searchRun.current !== run) return;
         // All engines done: if they produced nothing at all, fall back instantly
         if (!shown) {
           clearTimeout(net);
-          addBatch(builtinOpps(talent, loc?.short || location, seenOrgs.current, 4));
+          collected.push(...addBatch(builtinOpps(talent, loc?.short || location, seenOrgs.current, 4, {
+            global: useGlobal
+          })));
           reveal();
         }
-        // Stale-while-revalidate: refresh the cache with this run's best
-        setResults(prev => {
-          try {
-            if (prev.length) {
-              // Cap the number of cached searches so localStorage can't grow forever
-              const keys = Object.keys(localStorage).filter(k => k.startsWith("rise_cache::"));
-              if (keys.length > 8) keys.slice(0, keys.length - 8).forEach(k => localStorage.removeItem(k));
-              localStorage.setItem(cacheKey, JSON.stringify(prev.slice(0, 10)));
-            }
-          } catch (e) {}
-          return prev;
-        });
+        // STAGE 3+4 - judge and verify everything that survived
+        runJudge(run, collected);
+        runVerify(run, collected);
+        // Deliberately nothing written back — results are saved by useStorage
+        // for session restore, but never replayed into a new search.
       });
+    } else {
+      // Offline: still judge is impossible, but rank what the library gave us.
+      setTimeout(reveal, 400);
     }
   }
   async function loadMore() {
+    const run = searchRun.current;
     setLM(true);
     setMoreErr("");
-    let added = 0;
+    const added = [];
     if (isOnline) {
       const exclude = results.map(r => r.org).slice(-40).join(", ");
       const delay = ms => new Promise(r => setTimeout(r, ms));
-      const mixes = [[webSearchOpps(talent, location, spTxt, prefs, exclude), delay(600).then(() => aiOppsLocal(talent, location, spTxt, prefs, exclude))], [webSearchExact(talent, location, spTxt, prefs, exclude), delay(600).then(() => aiOppsNational(talent, location, spTxt, prefs, exclude))], [webSearchOpps(talent, location, spTxt, prefs, exclude), delay(600).then(() => webSearchExact(talent, location, spTxt, prefs, exclude))]];
-      const engines = mixes[Math.floor(Math.random() * mixes.length)];
+      // Rotate which pair of engines runs so a second click explores new ground
+      // instead of re-asking the same two questions.
+      // One engine per click, alternating between the broad search and the
+      // student's-own-words search so a second press covers new ground rather
+      // than re-billing for the same question.
+      const pool = canSearch ? [EXACT_ENGINE, WEB_ENGINE] : RECALL_ENGINES;
+      angleRef.current = (angleRef.current + 1) % 4;
+      const e = pool[loadMoreTurn.current++ % pool.length];
+      const engines = [e.fn(exclude)];
       const settled = await safeAllSettled(engines);
-      for (const r of settled) if (r.status === "fulfilled") added += addBatch(r.value);
+      for (const r of settled) if (r.status === "fulfilled") added.push(...addBatch(r.value));
     }
-    if (added === 0) added += addBatch(builtinOpps(talent, loc?.short || location, seenOrgs.current, 3));
-    if (added === 0) setMoreErr("No new organizations this round - try again in a moment, results vary.");
+    if (!added.length) added.push(...addBatch(builtinOpps(talent, loc?.short || location, seenOrgs.current, 3, {
+      global: prefs.virtualOnly || isGlobalLoc(location)
+    })));
+    if (!added.length) {
+      setMoreErr("No new organizations this round - try again in a moment, results vary.");
+    } else if (isOnline) {
+      runJudge(run, added);
+      runVerify(run, added);
+    }
     setLM(false);
   }
+  /* Derived view of the results list. Sorting and filtering happen here, on
+     data the student already has — no button in this UI costs a network call. */
+  const RANK = {
+    strong: 3,
+    good: 2,
+    weak: 1
+  };
+  const judged = results.some(o => o._judge);
+  const counts = {
+    strong: results.filter(o => verdictOf(o) === "strong").length,
+    good: results.filter(o => RANK[verdictOf(o)] >= 2).length
+  };
+  const visible = results.filter(o => minVerdict === "all" || RANK[verdictOf(o)] >= RANK[minVerdict]).slice().sort((a, b) => {
+    if (sortBy === "time") return hoursNum(a) - hoursNum(b);
+    if (sortBy === "confidence") return (b._judge?.credibility || 0) - (a._judge?.credibility || 0) || (b._score || 0) - (a._score || 0);
+    return (b._score || 0) - (a._score || 0);
+  });
+  const studentCtx = {
+    name: name,
+    skills: spTxt,
+    langs: langTxt,
+    detail: detail,
+    city: loc?.label || "",
+    time: prefs.timeTxt
+  };
   const LabelRow = ({
     step,
     total,
@@ -5036,7 +7619,12 @@ function MatcherPage({
       margin: "0 auto",
       padding: "40px 20px 80px"
     }
-  }, step !== "searching" && step !== "results" &&
+  }, showKey && /*#__PURE__*/React.createElement(AIKeyModal, {
+    onClose: () => setShowKey(false),
+    onSaved: () => {
+      if (step === "results") runSearch();
+    }
+  }), step !== "searching" && step !== "results" &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -5063,7 +7651,7 @@ function MatcherPage({
       color: "var(--ink-3)",
       marginBottom: 18
     }
-  }, "5 questions. Real opportunities near you."), /*#__PURE__*/React.createElement("div", {
+  }, "5 questions. Real roles, near you or anywhere."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -5340,8 +7928,9 @@ function MatcherPage({
     }, (SUPERPOWERS[tid] || []).map(s => {
       const capId = tid + "-" + s.id;
       const on = caps.includes(capId);
-      return /*#__PURE__*/ /*#__PURE__*/React.createElement(ChoiceBtn, {
-        key: capId,
+      return /*#__PURE__*/React.createElement("div", {
+        key: capId
+      }, /*#__PURE__*/React.createElement(ChoiceBtn, {
         selected: on,
         onClick: () => setCaps(prev => prev.includes(capId) ? prev.filter(x => x !== capId) : [...prev, capId])
       }, /*#__PURE__*/React.createElement("span", {
@@ -5350,9 +7939,149 @@ function MatcherPage({
           color: "var(--ink)",
           lineHeight: 1.7
         }
-      }, s.label));
+      }, s.label)),
+      // The level question only appears once they've claimed the skill, so the
+      // step stays a simple list until it needs to be more than that.
+      on && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          padding: "9px 2px 4px 14px",
+          alignItems: "center"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: "var(--ink-4)",
+          textTransform: "uppercase",
+          letterSpacing: ".08em"
+        }
+      }, "How good?"), LEVEL_OPTS.map(l => {
+        const sel = capLevels[capId] === l.id;
+        return /*#__PURE__*/React.createElement("button", {
+          key: l.id,
+          type: "button",
+          "aria-pressed": sel,
+          title: l.sub,
+          onClick: () => setCapLevels(p => Object.assign({}, p, {
+            [capId]: sel ? "" : l.id
+          })),
+          style: {
+            padding: "4px 10px",
+            borderRadius: 999,
+            border: "1.5px solid " + (sel ? "var(--fire)" : "var(--ink-5)"),
+            background: sel ? "var(--ember)" : "transparent",
+            color: sel ? "var(--fire)" : "var(--ink-3)",
+            fontSize: 11.5,
+            fontWeight: sel ? 700 : 500,
+            cursor: "pointer",
+            fontFamily: "'DM Sans', sans-serif"
+          }
+        }, l.label);
+      })));
     })));
-  }), /*#__PURE__*/React.createElement(NavRow, {
+  }),
+  // Languages are a capability in their own right, and one of the sharpest
+  // matching signals there is — a settlement program needs the specific
+  // language, not "a volunteer who is good with people".
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginTop: 6,
+      marginBottom: 18,
+      paddingTop: 16,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 4
+    }
+  }, "Languages you speak"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 10
+    }
+  }, "Optional, but it opens up roles nothing else will — interpreting, settlement support, homework help for newcomers."), Object.keys(langs).filter(l => langs[l]).map(l => /*#__PURE__*/React.createElement("div", {
+    key: l,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      flexWrap: "wrap",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink)",
+      minWidth: 108
+    }
+  }, l), LANG_LEVELS.map(lv => {
+    const sel = langs[l] === lv.id;
+    return /*#__PURE__*/React.createElement("button", {
+      key: lv.id,
+      type: "button",
+      "aria-pressed": sel,
+      onClick: () => setLangs(p => Object.assign({}, p, {
+        [l]: lv.id
+      })),
+      style: {
+        padding: "4px 10px",
+        borderRadius: 999,
+        border: "1.5px solid " + (sel ? "var(--fire)" : "var(--ink-5)"),
+        background: sel ? "var(--ember)" : "transparent",
+        color: sel ? "var(--fire)" : "var(--ink-3)",
+        fontSize: 11.5,
+        fontWeight: sel ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif"
+      }
+    }, lv.label);
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Remove " + l,
+    onClick: () => setLangs(p => {
+      const n = Object.assign({}, p);
+      delete n[l];
+      return n;
+    }),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      color: "var(--ink-4)",
+      padding: 4,
+      display: "inline-flex"
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 12
+  })))), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: "",
+    "aria-label": "Add a language",
+    onChange: e => {
+      if (e.target.value) setLangs(p => Object.assign({}, p, {
+        [e.target.value]: "fluent"
+      }));
+    },
+    style: {
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Add a language…"), LANGUAGES.filter(l => !langs[l]).map(l => /*#__PURE__*/React.createElement("option", {
+    key: l,
+    value: l
+  }, l)))), /*#__PURE__*/React.createElement(NavRow, {
     onBack: () => go("talent"),
     onNext: () => go("prefs"),
     nextDisabled: !caps.length
@@ -5443,6 +8172,43 @@ function MatcherPage({
       fontSize: 11,
       color: "var(--ink-3)"
     }
+  }, v.sub)))))),
+  // VIC: how they want to show up. Born in Canada, reaching the world — this
+  // is the line between a shift down the street and a remote role abroad.
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 9
+    }
+  }, "How do you want to show up?"), VTYPE_OPTS.map(v => /*#__PURE__*/React.createElement("div", {
+    key: v.id,
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(ChoiceBtn, {
+    selected: vtype === v.id,
+    onClick: () => setVtype(vtype === v.id ? "" : v.id)
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 1
+    }
+  }, v.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)"
+    }
   }, v.sub)))))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 18
@@ -5488,6 +8254,57 @@ function MatcherPage({
         transition: "all .15s"
       }
     }, o.label);
+  }))),
+  // VIC: why they're serving. Two students with identical skills and identical
+  // availability still belong in different rooms, and this is the field that
+  // tells them apart.
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 4
+    }
+  }, "Why are you doing this?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 9
+    }
+  }, "Be honest — there's no wrong answer, and it changes which roles we look for."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 7
+    }
+  }, WHY_OPTS.map(o => {
+    const on = why.includes(o.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      title: o.sub,
+      onClick: () => setWhy(prev => prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev, o.id]),
+      style: {
+        padding: "7px 13px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-2)",
+        fontSize: 12.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif",
+        transition: "all .15s"
+      }
+    }, o.label);
   }))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 22
@@ -5509,7 +8326,7 @@ function MatcherPage({
       color: "var(--ink-3)",
       marginBottom: 9
     }
-  }, "The more detail, the better the match. e.g. \"I play jazz trumpet and want to work with kids\" or \"I speak Arabic and Spanish\"."), /*#__PURE__*/React.createElement("input", {
+  }, "The more detail, the better the match. e.g. \"I play jazz trumpet and want to work with kids\" or \"I've helped run my mosque's food drive for two years\"."), /*#__PURE__*/React.createElement("input", {
     id: "detail-input",
     className: "input",
     type: "text",
@@ -5596,13 +8413,20 @@ function MatcherPage({
       background: "var(--fire)",
       borderRadius: 100
     }
-  })), /*#__PURE__*/React.createElement("p", {
+  })),
+  // Show the real work instead of a spinner that means nothing.
+  /*#__PURE__*/
+  React.createElement(EngineProgress, {
+    engines: ENGINES,
+    state: engineState
+  }), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11,
       color: "var(--ink-4)",
       fontWeight: 600,
       textTransform: "uppercase",
-      letterSpacing: ".1em"
+      letterSpacing: ".1em",
+      marginTop: 24
     }
   }, "Results appear as soon as they're found")), step === "results" &&
   /*#__PURE__*/
@@ -5624,7 +8448,7 @@ function MatcherPage({
     }
   }, /*#__PURE__*/React.createElement(CheckCircle, {
     size: 10
-  }), "\xA0", results.length, " match", results.length !== 1 ? "es" : "", " · ", loc?.short, pending > 0 &&
+  }), "\xA0", visible.length, visible.length !== results.length ? ` of ${results.length}` : "", " match", results.length !== 1 ? "es" : "", loc?.short ? " · " + loc.short : "", pending > 0 &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("span", {
@@ -5651,7 +8475,10 @@ function MatcherPage({
       color: "var(--ink-3)",
       marginTop: 3
     }
-  }, (talLabels.length ? talLabels.join(", ") : tal?.label) + " · " + (loc?.label || "") + " · " + (isOnline ? "Real orgs, ranked for you" : "Suggested matches"))), /*#__PURE__*/React.createElement("button", {
+  },
+  // Restored sessions have results but no wizard answers in state, so every
+  // part of this line has to be optional or it renders "undefined · ·".
+  [talLabels.length ? talLabels.join(", ") : tal?.label, loc?.label, isOnline ? "Real roles, ranked for you" : "Suggested matches"].filter(Boolean).join(" · "))), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost",
     onClick: () => {
       setResults([]);
@@ -5661,6 +8488,10 @@ function MatcherPage({
       setCaps([]);
       setServe([]);
       setDetail("");
+      setVtype("");
+      setWhy([]);
+      setCapLevels({});
+      setLangs({});
       seenOrgs.current = new Set();
       go("name");
     },
@@ -5671,7 +8502,24 @@ function MatcherPage({
     }
   }, /*#__PURE__*/React.createElement(RefreshCw, {
     size: 11
-  }), " Retake")), !isOnline &&
+  }), " Retake"),
+  // Re-run the same profile against the live web with a different opening
+  // angle. "Retake" throws the answers away; this keeps them and just looks
+  // again, which is what people actually want when results feel stale.
+  /*#__PURE__*/
+  React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: runSearch,
+    title: "Search the web again for this same profile",
+    style: {
+      padding: "8px 14px",
+      fontSize: 12,
+      flexShrink: 0,
+      marginLeft: 8
+    }
+  }, /*#__PURE__*/React.createElement(Search, {
+    size: 11
+  }), " Search again")), !isOnline &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -5689,13 +8537,65 @@ function MatcherPage({
     }
   }, /*#__PURE__*/React.createElement(WifiOff, {
     size: 13
-  }), " Offline mode - AI knowledge only. Turn Live on for web verification."), /*#__PURE__*/React.createElement("div", {
+  }), " Offline mode - AI knowledge only. Turn Live on for web verification."), isOnline && /*#__PURE__*/React.createElement(AIStatusNotice, {
+    health: aiHealth,
+    onOpenSettings: () => setShowKey(true)
+  }),
+  // While the judge pass runs, say so — the order is about to change and a
+  // silent reshuffle under the student's thumb is disorienting.
+  judging &&
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "10px 14px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10,
+      fontSize: 12,
+      color: "var(--ink-2)",
+      marginBottom: 16
+    },
+    "aria-live": "polite"
+  }, /*#__PURE__*/React.createElement(Loader, {
+    size: 12,
+    className: "spin",
+    color: "var(--fire)"
+  }), "Weighing each role against what you can do — the order will update."), results.length > 2 && /*#__PURE__*/React.createElement(ResultControls, {
+    sortBy: sortBy,
+    setSortBy: setSortBy,
+    minVerdict: minVerdict,
+    setMinVerdict: setMinVerdict,
+    counts: counts,
+    judged: judged
+  }), visible.length === 0 && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      padding: "18px 0",
+      lineHeight: 1.7
+    }
+  }, "Nothing meets that bar yet. Show ", /*#__PURE__*/React.createElement("button", {
+    onClick: () => setMinVerdict("all"),
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 13
+    }
+  }, "all matches"), " or load more below."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
       gap: 16
     }
-  }, results.map((opp, idx) =>
+  }, visible.map((opp, idx) =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(ResultCard, {
@@ -5705,6 +8605,7 @@ function MatcherPage({
     insight: insights[oppKey(opp)],
     talLabel: tal?.label,
     isWeb: isOnline,
+    student: studentCtx,
     isFav: favs.some(f => favId(f) === favId(opp)),
     onFav: () => toggleFav(opp),
     studentName: name,
@@ -5774,7 +8675,7 @@ function MatcherPage({
       fontSize: 12,
       color: "var(--ink-3)"
     }
-  }, "Track toward your province's goal and build a portfolio."))))));
+  }, "A record of what you actually did. Graduation hours are a by-product, not the point."))))));
 }
 
 /* Provincial & territorial graduation volunteer requirements.
@@ -6251,7 +9152,12 @@ function HoursPage() {
     date: new Date().toISOString().split("T")[0],
     hours: "",
     desc: "",
-    supervisor: ""
+    supervisor: "",
+    // Volunteering Activity Card: the who / where / why of what was actually done
+    org: "",
+    where: "",
+    who: [],
+    why: []
   });
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
@@ -6299,6 +9205,17 @@ function HoursPage() {
       hours: h,
       desc: f.desc,
       supervisor: f.supervisor,
+      // ── Volunteering Activity Card fields ──
+      // The mirror of the interest card: not just how long you were there, but
+      // who you served, where, and why. A record of "12 hrs, Music" tells a
+      // reference letter writer nothing; this tells them something.
+      org: (f.org || "").trim(),
+      where: (f.where || "").trim(),
+      who: f.who || [],
+      why: f.why || [],
+      // Self-reported until the named supervisor says otherwise. Nothing in
+      // this app can verify that on its own, and the record says so.
+      status: "unconfirmed",
       loggedAt: new Date().toISOString()
     }, ...entries]);
     setF({
@@ -6307,11 +9224,40 @@ function HoursPage() {
       date: new Date().toISOString().split("T")[0],
       hours: "",
       desc: "",
-      supervisor: ""
+      supervisor: "",
+      org: "",
+      where: "",
+      who: [],
+      why: []
     });
-    setOk("Hours logged!");
+    setOk("Session logged.");
     setForm(false);
     setTimeout(() => setOk(""), 3500);
+  }
+
+  /* Ask the supervisor to confirm the session. We can't verify anything
+     ourselves without a server that owns the mailbox, so this opens a prefilled
+     email from the student and records that they asked — it never marks the
+     entry confirmed on its own. */
+  function requestConfirmation(entry) {
+    const subject = `Volunteer hours confirmation — ${studentName || "student"}, ${fmtDate(entry.date)}`;
+    const body = [`Hi,`, ``, `I volunteered with ${entry.org || "your organization"} on ${fmtDate(entry.date)} for ${entry.hours} ${entry.hours === 1 ? "hour" : "hours"}.`, ``, `What I did: ${entry.desc}`, ``, `Would you be able to reply confirming that's accurate? I'm keeping a record of my volunteer service and a short reply from you is all I need.`, ``, `Thank you,`, studentName || ""].join("\n");
+    window.open(gmailComposeUrl(entry.supervisor, subject, body), "_blank", "noopener");
+    save(entries.map(e => e.id === entry.id ? {
+      ...e,
+      status: e.status === "confirmed" ? "confirmed" : "requested",
+      requestedAt: new Date().toISOString()
+    } : e));
+  }
+
+  // Marking a reply as received is the student's own attestation, and the
+  // exported record labels it that way rather than dressing it up as proof.
+  function markConfirmed(entry) {
+    save(entries.map(e => e.id === entry.id ? {
+      ...e,
+      status: e.status === "confirmed" ? "requested" : "confirmed",
+      confirmedAt: new Date().toISOString()
+    } : e));
   }
   async function getRef() {
     setLRef(true);
@@ -6355,7 +9301,9 @@ function HoursPage() {
         <td>${e.org ? esc(e.project) : "Volunteer service"}${e.supervisor ? `<span class="sup">Supervisor: ${esc(e.supervisor)}</span>` : ""}</td>
         <td class="date">${esc(e.date)}</td>
         <td class="hrs">${Number(e.hours).toFixed(1)}</td>
+        <td class="conf">${e.status === "confirmed" ? "Confirmed" : e.status === "requested" ? "Requested" : "\u2014"}</td>
       </tr>`).join("");
+    const confirmedHours = entries.filter(e => e.status === "confirmed").reduce((n, e) => n + Number(e.hours), 0);
     const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>Volunteer Service Record — ${esc(sName)}</title>
 <style>
@@ -6376,6 +9324,7 @@ function HoursPage() {
   h2 { font-size: 10pt; text-transform: uppercase; letter-spacing: .12em; color: #D6560C; border-bottom: 1px solid #ddd; padding-bottom: 5px; margin: 0 0 4px; }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .06em; color: #888; font-weight: bold; padding: 8px 8px; border-bottom: 1.5px solid #ccc; }
+  .conf { text-align: right; white-space: nowrap; font-size: 9pt; color: #555; }
   th.hrs, td.hrs { text-align: right; }
   td { padding: 9px 8px; border-bottom: 1px solid #eee; vertical-align: top; font-size: 10pt; }
   td.org { font-weight: bold; }
@@ -6401,14 +9350,14 @@ function HoursPage() {
   </div>
   <h2>Activity Ledger</h2>
   <table>
-    <thead><tr><th>Organization</th><th>Role / Activity</th><th>Date</th><th class="hrs">Hours</th></tr></thead>
+    <thead><tr><th>Organization</th><th>Role / Activity</th><th>Date</th><th class="hrs">Hours</th><th class="conf">Confirmed</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="signoff">
     <div class="sig"><div class="line"></div><div class="cap">Supervisor signature</div></div>
     <div class="sig"><div class="line"></div><div class="cap">Date</div></div>
   </div>
-  <div class="foot">This record was generated by the student through RISE (rise4impact.org) on ${esc(exportDate)} at ${esc(now.toLocaleTimeString())}. Individual entries may require verification by the listed supervising organizations.</div>
+  <div class="foot"><strong>How to read this document.</strong> Every entry in this record is reported by the student. RISE does not contact organizations and does not verify hours. An entry marked <em>Confirmed</em> means the student states the named supervisor replied to confirm it; <em>Requested</em> means they have asked and are waiting. Of ${total.toFixed(1)} total hours, ${confirmedHours.toFixed(1)} are marked confirmed. Anyone relying on this record should contact the supervisors listed.<br/><br/>Generated through RISE (rise4impact.org) on ${esc(exportDate)} at ${esc(now.toLocaleTimeString())}.</div>
 </body></html>`;
     const frame = document.createElement("iframe");
     frame.style.position = "fixed";
@@ -7090,7 +10039,160 @@ function HoursPage() {
       ...p,
       supervisor: e.target.value
     }))
-  })), /*#__PURE__*/React.createElement("button", {
+  })),
+  /* ── Volunteering Activity Card ──
+     The counterpart to the interest card. "12 hrs, Music" is a number; a
+     reference-letter writer or an admissions officer can do nothing with it.
+     Who you served, where, and why turns the same session into something a
+     person can actually read back to you. All optional — a student mid-way
+     through logging a shift should never be blocked by a form. */
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      paddingTop: 14,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 3
+    }
+  }, "Activity card (optional)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 12,
+      lineHeight: 1.6
+    }
+  }, "Takes fifteen seconds and makes this record worth showing someone."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Organization"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "text",
+    placeholder: "e.g. Baycrest",
+    value: f.org,
+    onChange: e => setF(p => ({
+      ...p,
+      org: e.target.value
+    }))
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Where"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "text",
+    placeholder: "City, or Remote",
+    value: f.where,
+    onChange: e => setF(p => ({
+      ...p,
+      where: e.target.value
+    }))
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 7
+    }
+  }, "Who you served"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, SERVE_OPTS.filter(o => o.id !== "any").map(o => {
+    const on = (f.who || []).includes(o.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      onClick: () => setF(p => ({
+        ...p,
+        who: on ? (p.who || []).filter(x => x !== o.id) : [...(p.who || []), o.id]
+      })),
+      style: {
+        padding: "5px 11px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-3)",
+        fontSize: 11.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif"
+      }
+    }, o.label);
+  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 7
+    }
+  }, "Why it mattered"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, WHY_OPTS.map(o => {
+    const on = (f.why || []).includes(o.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      title: o.sub,
+      onClick: () => setF(p => ({
+        ...p,
+        why: on ? (p.why || []).filter(x => x !== o.id) : [...(p.why || []), o.id]
+      })),
+      style: {
+        padding: "5px 11px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-3)",
+        fontSize: 11.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif"
+      }
+    }, o.label);
+  })))), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-fire",
     onClick: submit,
     style: {
@@ -7100,7 +10202,7 @@ function HoursPage() {
     }
   }, /*#__PURE__*/React.createElement(CheckCircle, {
     size: 14
-  }), " Log These Hours"))), entries.length === 0 ?
+  }), " Log This Session"))), entries.length === 0 ?
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -7201,7 +10303,12 @@ function HoursPage() {
       fontWeight: 600,
       color: "var(--ink)"
     }
-  }, e.project), /*#__PURE__*/React.createElement("div", {
+  }, e.project, e.org ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 500,
+      color: "var(--ink-3)"
+    }
+  }, " \xB7 ", e.org) : null), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: "var(--ink-3)",
@@ -7222,13 +10329,26 @@ function HoursPage() {
     month: "short",
     day: "numeric",
     year: "numeric"
-  })), /*#__PURE__*/React.createElement("span", {
-    className: "badge badge-neutral",
+  })), e.where ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 3
+    }
+  }, /*#__PURE__*/React.createElement(MapPin, {
+    size: 9
+  }), " ", e.where) : null,
+  // The badge used to read "Pending" on every entry forever, regardless of
+  // whether anyone had ever been asked to confirm it.
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge " + (e.status === "confirmed" ? "badge-green" : "badge-neutral"),
     style: {
       fontSize: 9,
       padding: "1px 7px"
-    }
-  }, "Pending"))), /*#__PURE__*/React.createElement("button", {
+    },
+    title: e.status === "confirmed" ? "You marked this as confirmed by your supervisor" : e.status === "requested" ? "You've asked your supervisor to confirm it" : "Not yet sent for confirmation"
+  }, e.status === "confirmed" ? "Confirmed" : e.status === "requested" ? "Awaiting reply" : "Not confirmed"))), /*#__PURE__*/React.createElement("button", {
     onClick: () => save(entries.filter(x => x.id !== e.id)),
     style: {
       background: "none",
@@ -7250,12 +10370,71 @@ function HoursPage() {
       lineHeight: 1.65,
       marginBottom: 2
     }
-  }, e.desc), /*#__PURE__*/React.createElement("span", {
+  }, e.desc), (e.who || []).length || (e.why || []).length ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 5,
+      margin: "7px 0 8px"
+    }
+  }, (e.who || []).map(id => /*#__PURE__*/React.createElement("span", {
+    key: "w" + id,
+    className: "badge badge-neutral",
+    style: {
+      fontSize: 9.5,
+      padding: "1px 7px"
+    },
+    title: "Who you served"
+  }, (SERVE_OPTS.find(o => o.id === id) || {}).label || id)), (e.why || []).map(id => /*#__PURE__*/React.createElement("span", {
+    key: "y" + id,
+    className: "badge badge-fire",
+    style: {
+      fontSize: 9.5,
+      padding: "1px 7px"
+    },
+    title: "Why it mattered"
+  }, (WHY_OPTS.find(o => o.id === id) || {}).label || id))) : null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "var(--ink-4)"
     }
-  }, "Supervisor: ", e.supervisor)))))), tab === "badges" &&
+  }, "Supervisor: ", e.supervisor),
+  // Nothing in this app can verify a session on its own, so the student asks
+  // and the record tracks that they asked. It never flips itself.
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => requestConfirmation(e),
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: "var(--fire)"
+    }
+  }, e.status === "unconfirmed" || !e.status ? "Ask them to confirm" : "Ask again"), e.status && e.status !== "unconfirmed" ? /*#__PURE__*/React.createElement("button", {
+    onClick: () => markConfirmed(e),
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: e.status === "confirmed" ? "var(--ink-4)" : "var(--success)"
+    }
+  }, e.status === "confirmed" ? "Undo" : "They replied \u2014 mark confirmed") : null)))))), tab === "badges" &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(BadgesTab, {
@@ -7298,6 +10477,14 @@ function SettingsPage({
   isOnline,
   setOnline
 }) {
+  const [showKey, setShowKey] = useState(false);
+  const [aiKeySet, setAiKeySet] = useState(() => {
+    try {
+      return !!localStorage.getItem("rise_gemini_key");
+    } catch (e) {
+      return false;
+    }
+  });
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 520,
@@ -7363,7 +10550,26 @@ function SettingsPage({
       paddingTop: 12,
       borderTop: "1px solid var(--ink-6)"
     }
-  }, "You can use RISE offline anytime. Offline mode still finds volunteer matches using built-in knowledge of Canadian organizations - it just skips the live web verification step, which makes it lighter and works better on weak connections. Your hours log and settings always work offline.")), /*#__PURE__*/React.createElement("div", {
+  }, "You can use RISE offline anytime. Offline mode still finds volunteer matches using our built-in list of real organizations - it just skips live web search, which makes it lighter and works better on weak connections. Your hours log and settings always work offline."),
+  // Previously the only way to reach this was to run a search and have it fail,
+  // which is the worst possible moment to discover a setting exists.
+  /*#__PURE__*/
+  React.createElement(SettingRow, {
+    label: "Your own AI key",
+    sub: aiKeySet ? "Live matching is using your personal key." : "RISE ships with a shared free key that usually runs out. A free key of your own takes a minute.",
+    control: /*#__PURE__*/React.createElement("button", {
+      className: aiKeySet ? "btn btn-ghost" : "btn btn-fire",
+      onClick: () => setShowKey(true),
+      style: {
+        padding: "8px 14px",
+        fontSize: 12,
+        whiteSpace: "nowrap"
+      }
+    }, aiKeySet ? "Change" : "Add key")
+  })), showKey && /*#__PURE__*/React.createElement(AIKeyModal, {
+    onClose: () => setShowKey(false),
+    onSaved: () => setAiKeySet(!!localStorage.getItem("rise_gemini_key"))
+  }), /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       padding: "20px 22px",

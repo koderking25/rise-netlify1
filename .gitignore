@@ -1,0 +1,11 @@
+# Secrets. The whole point of the proxy is that keys live here and never in
+# index.html — so this file must never be committed.
+.env
+.env.*
+!.env.example
+
+# Local tooling
+.netlify/
+.wrangler/
+node_modules/
+.DS_Store

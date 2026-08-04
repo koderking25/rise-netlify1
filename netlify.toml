@@ -10,3 +10,12 @@
   [headers.values]
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
+
+# The client tries /api/ai-search first (it's the Cloudflare-style path), then
+# falls back to /.netlify/functions/ai-search. Mapping it here means the first
+# attempt succeeds and every search saves a wasted round trip.
+[[redirects]]
+  from = "/api/ai-search"
+  to = "/.netlify/functions/ai-search"
+  status = 200
+  force = true
