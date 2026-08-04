@@ -332,17 +332,16 @@ function anthropicSources(data) {
    walks a ladder instead, parking exhausted models until the daily reset.
 
    Kept deliberately in sync with GEMINI_LADDER in index.html. */
-const GEMINI_LADDER = (process.env.GEMINI_MODELS || "").trim()
-  ? process.env.GEMINI_MODELS.split(",").map(s => s.trim()).filter(Boolean)
-  : [
-      "gemini-3.5-flash",
-      "gemini-3.6-flash",
-      "gemini-3-flash-preview",
-      "gemini-3.1-flash-lite",
-      "gemini-3.5-flash-lite",
-      "gemini-flash-lite-latest",
-      "gemini-2.5-flash"
-    ];
+/* NOTE: no `process.env` anywhere in this file. Cloudflare Workers has no
+   `process` global, so reading it at module scope throws a ReferenceError
+   before the handler ever runs and every request 500s. Config arrives through
+   the `env` argument instead. */
+const GEMINI_LADDER_DEFAULT = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash"];
+
+function ladderFor(env) {
+  const custom = ((env && env.GEMINI_MODELS) || "").trim();
+  return custom ? custom.split(",").map(s => s.trim()).filter(Boolean) : GEMINI_LADDER_DEFAULT;
+}
 
 const modelBlocked = Object.create(null); // model -> unblock timestamp
 let groundingOff = false;
@@ -354,10 +353,11 @@ function msUntilQuotaReset() {
   return Math.max(60000, reset - now);
 }
 
-function availableModels() {
+function availableModels(env) {
   const now = Date.now();
-  const free = GEMINI_LADDER.filter(m => !(modelBlocked[m] > now));
-  return free.length ? free : GEMINI_LADDER.slice();
+  const ladder = ladderFor(env);
+  const free = ladder.filter(m => !(modelBlocked[m] > now));
+  return free.length ? free : ladder.slice();
 }
 
 function geminiPayload(body, model, withSearch, extraRoom) {
