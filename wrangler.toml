@@ -1,0 +1,33 @@
+# Cloudflare Workers configuration.
+#
+# This project deploys as a Worker with static assets (`npx wrangler deploy`),
+# not as a Pages project. That distinction matters: the `functions/` directory
+# convention is Pages-only, so without a real Worker entry point the API route
+# simply does not exist and Cloudflare correctly refuses to accept environment
+# variables — there is no runtime code for them to reach.
+#
+# `main` below is what turns this from "static files" into "static files plus a
+# server", which is what makes ANTHROPIC_API_KEY settable and /api/ai-search
+# real.
+
+name = "rise-netlify1"
+main = "src/index.js"
+compatibility_date = "2026-08-04"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+# The app itself. Matches the repo layout: index.html and the favicons.
+directory = "./public"
+# The Worker reaches the files through this binding, so it can serve the site
+# for every path it doesn't handle itself.
+binding = "ASSETS"
+# RISE routes in the client, so a deep link should still return the app rather
+# than a 404 page.
+not_found_handling = "single-page-application"
+
+[observability]
+enabled = true
+
+# Secrets are NOT set here — this file is committed. Set them with either:
+#   npx wrangler secret put ANTHROPIC_API_KEY
+# or the dashboard: Settings → Variables and secrets → Add → type "Secret".

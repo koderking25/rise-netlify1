@@ -85,17 +85,21 @@ export async function onRequestPost(ctx) {
     return reply(500, { error: "No provider key configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY." });
   }
 
-  // Colo-wide cache, keyed on a hash of the request so identical questions
-  // asked by different students share one upstream call.
-  const cache = caches.default;
+  /* Colo-wide cache, keyed on a hash of the request so identical questions
+     asked by different students share one upstream call. Guarded because the
+     cache is an optimisation, not a dependency — if `caches` is unavailable in
+     whatever runtime this lands in, matching should still work, just without
+     the saving. An optional speed-up must never be able to 500 the request. */
+  const cache = typeof caches !== "undefined" && caches.default ? caches.default : null;
   const cacheUrl = new URL(request.url);
   cacheUrl.pathname = "/api/ai-search/" + (await hash(raw));
   const cacheReq = new Request(cacheUrl.toString(), { method: "GET" });
 
-  const cached = body.fresh ? null : await cache.match(cacheReq);
-  if (cached) {
-    const out = await cached.json();
-    return reply(200, out, { "X-Cache": "HIT" });
+  if (cache && !body.fresh) {
+    try {
+      const cached = await cache.match(cacheReq);
+      if (cached) return reply(200, await cached.json(), { "X-Cache": "HIT" });
+    } catch (e) {}
   }
 
   const budget = env.DAILY_BUDGET_USD == null ? 5 : Number(env.DAILY_BUDGET_USD);
@@ -128,14 +132,13 @@ export async function onRequestPost(ctx) {
     }
   }
 
-  if (!body.fresh) ctx.waitUntil(
-    cache.put(
-      cacheReq,
-      new Response(JSON.stringify(out), {
+  if (cache && !body.fresh && ctx.waitUntil) {
+    try {
+      ctx.waitUntil(cache.put(cacheReq, new Response(JSON.stringify(out), {
         headers: { "Content-Type": "application/json", "Cache-Control": "max-age=" + CACHE_TTL }
-      })
-    )
-  );
+      })));
+    } catch (e) {}
+  }
   return reply(200, out, { "X-Cache": "MISS" });
 }
 
