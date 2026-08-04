@@ -13,6 +13,37 @@ functions/api/ai-search.js      AI proxy — Cloudflare Pages
 
 ---
 
+## Setup — Cloudflare Pages
+
+**Build configuration** (Pages → Settings → Builds & deployments):
+
+| Setting | Value |
+|---|---|
+| Framework preset | None |
+| Build command | *(leave empty)* |
+| Build output directory | `public` |
+
+**Environment variable** (Pages → Settings → Environment variables → Production):
+
+- `ANTHROPIC_API_KEY` = your `sk-ant-api03-...` key — click **Encrypt**
+
+Redeploy after adding it. `functions/api/ai-search.js` maps automatically to
+`/api/ai-search`, which is the path the app calls first.
+
+Check it worked:
+
+```bash
+curl -s -X POST https://YOUR-SITE.pages.dev/api/ai-search \
+  -H 'content-type: application/json' -d '{"action":"ping"}'
+```
+
+You want `{"ok":true,"provider":"anthropic","search":true}`. If `provider` is
+`gemini` or `search` is `false`, the key didn't take — that is the single cause
+of "these are starting points, not live matches".
+
+`netlify.toml` and `netlify/functions/` are unused on Cloudflare. Harmless, and
+they keep Netlify available as a second option.
+
 ## Setup: your Sonnet 5 key
 
 The app now runs on **Claude Sonnet 5 with real web search**. Your key is in

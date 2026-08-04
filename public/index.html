@@ -2081,6 +2081,12 @@ function groundingSources(cand) {
   return out;
 }
 let PROXY_STATE = "untried"; // "untried" | "ok" | "dead"
+// What the server told us it can do, learned from the free ping.
+const PROXY_CAPS = {
+  known: false,
+  provider: "",
+  search: false
+};
 let PROXY_PATH = PROXY_PATHS[0];
 /* Find the proxy once, cheaply.
 
@@ -2114,6 +2120,17 @@ async function findProxy() {
       if (res.status !== 404 && res.status !== 405) {
         PROXY_STATE = "ok";
         PROXY_PATH = path;
+        // The ping reports which provider is configured and whether live web
+        // search is available. Knowing that up front is the difference between
+        // "live search couldn't be reached" and "add your key in Cloudflare".
+        try {
+          const info = await res.json();
+          if (info && typeof info === "object") {
+            PROXY_CAPS.provider = info.provider || "";
+            PROXY_CAPS.search = !!info.search;
+            PROXY_CAPS.known = true;
+          }
+        } catch (e) {}
         return true;
       }
     } catch (e) {
@@ -2142,7 +2159,18 @@ async function proxyCall(body, timeoutMs) {
         signal: ctrl.signal
       });
       clearTimeout(timer);
-      if (!res.ok) throw new Error("proxy " + res.status);
+      if (!res.ok) {
+        // Keep whatever the server said. "No provider key configured" is a
+        // fixable instruction; "proxy 500" is a shrug.
+        let detail = "";
+        try {
+          detail = (await res.json()).error || "";
+        } catch (e) {}
+        const err = new Error(detail || "proxy " + res.status);
+        err.status = res.status;
+        err.serverSaid = detail;
+        throw err;
+      }
       PROXY_STATE = "ok";
       PROXY_PATH = path;
       const data = await res.json();
@@ -2153,7 +2181,10 @@ async function proxyCall(body, timeoutMs) {
       lastErr = e;
     }
   }
-  if (PROXY_STATE !== "ok") PROXY_STATE = "dead";
+  /* Only give up on a proxy that isn't there. A 5xx means it exists and is
+     misconfigured — marking it dead would hide the real problem for the rest
+     of the session and silently downgrade every later search. */
+  if (PROXY_STATE !== "ok" && !(lastErr && lastErr.status >= 500)) PROXY_STATE = "dead";
   throw lastErr || new Error("proxy unavailable");
 }
 
@@ -2283,6 +2314,7 @@ async function apiCall(body, timeoutMs = 60000, retries = 2) {
   return p;
 }
 async function transport(body, timeoutMs, retries) {
+  let proxyFault = "";
   try {
     // Proxy first: it is the only path where the key is not in the page source.
     if (PROXY_STATE !== "dead") {
@@ -2290,7 +2322,27 @@ async function transport(body, timeoutMs, retries) {
         const r = await proxyCall(body, timeoutMs);
         setAIHealth("live", "");
         return r;
-      } catch (e) {/* fall through */}
+      } catch (e) {
+        // A configuration problem is worth naming exactly — it is a 30-second
+        // fix if you know what it is, and unfindable if you don't.
+        if (e && e.serverSaid) proxyFault = e.serverSaid;else if (e && e.status) proxyFault = "The AI server returned " + e.status + ".";
+        /* One retry for a transient upstream wobble. A 502 here is usually
+           Anthropic rate-limiting or a momentary blip, and dropping straight to
+           the offline library over that is what makes matching feel unreliable.
+           Configuration errors (no key) aren't retried — they won't fix
+           themselves in two seconds. */
+        const worthRetry = e && e.status >= 500 && !/no provider key/i.test(proxyFault);
+        if (worthRetry) {
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            const r2 = await proxyCall(body, timeoutMs);
+            setAIHealth("live", "");
+            return r2;
+          } catch (e2) {
+            if (e2 && e2.serverSaid) proxyFault = e2.serverSaid;
+          }
+        }
+      }
     }
     if (API_KEY) {
       try {
@@ -2314,7 +2366,11 @@ async function transport(body, timeoutMs, retries) {
   } catch (e) {
     // Don't overwrite a specific diagnosis (quota, auth) with a generic one.
     if (AI_HEALTH.state !== "quota" && AI_HEALTH.state !== "auth") {
-      setAIHealth("down", "Live search couldn't be reached.");
+      if (/no provider key/i.test(proxyFault)) {
+        setAIHealth("noserverkey", "");
+      } else {
+        setAIHealth("down", proxyFault || "Live search couldn't be reached.");
+      }
     }
     throw e;
   }
@@ -4931,6 +4987,50 @@ function AIStatusNotice({
 }) {
   if (health.state === "live" || health.state === "unknown") return null;
   const quota = health.state === "quota";
+
+  /* The server is up but has no AI key. This used to surface as "live search
+     couldn't be reached", which is true and useless — it sends you looking at
+     your network instead of at the one setting that's actually missing. */
+  if (health.state === "noserverkey") {
+    return /*#__PURE__*/React.createElement("div", {
+      role: "status",
+      style: {
+        padding: "13px 16px",
+        background: "var(--surface-up)",
+        border: "1px solid var(--ink-5)",
+        borderLeft: "3px solid var(--fire)",
+        borderRadius: 10,
+        marginBottom: 18
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: "var(--ink)",
+        marginBottom: 5,
+        display: "flex",
+        gap: 8,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement(AlertCircle, {
+      size: 14,
+      color: "var(--fire)"
+    }), "Live matching isn't switched on yet"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "var(--ink-2)",
+        lineHeight: 1.7
+      }
+    }, "The site is running, but the server has no AI key, so it can't search the web. Add ", /*#__PURE__*/React.createElement("code", {
+      style: {
+        background: "var(--ember)",
+        color: "var(--fire)",
+        padding: "1px 5px",
+        borderRadius: 4,
+        fontSize: 11.5
+      }
+    }, "ANTHROPIC_API_KEY"), " as an environment variable on your host, then redeploy. Until then these are real organizations from the built-in list, but not tailored to your answers."));
+  }
   // "nosearch" is a partial outage, not a failure: the AI is still matching
   // against the profile, it just can't read the live web. Saying "these are
   // starting points" there would be wrong and would undersell real results.
@@ -7149,6 +7249,21 @@ function MatcherPage({
   const angleRef = useRef(Number(localStorage.getItem("rise_angle") || 0));
   const aiHealth = useAIHealth();
   const [showKey, setShowKey] = useState(false);
+  // Bumped when the startup probe answers, purely to re-render with the
+  // server's real capabilities. (Not named `caps` — that's the student's
+  // selected skills.)
+  const [srvProbe, setSrvProbe] = useState(0);
+  useEffect(() => {
+    /* Ask the server what it can do before the student finishes answering.
+       The ping never reaches a model so it costs nothing, and it means the
+       first search already knows whether live web search exists instead of
+       discovering it by failing. */
+    let alive = true;
+    findProxy().then(() => alive && setSrvProbe(n => n + 1)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Restore: if matches were saved (locally or to their account), show them
   // again and rebuild the dedupe set so Load More never repeats an org.
@@ -7373,7 +7488,10 @@ function MatcherPage({
   };
   // Web search only exists behind the proxy. Everywhere else, fall back to
   // recall so the student still gets matched rather than nothing.
-  const canSearch = PROXY_STATE !== "dead";
+  /* Live web search only exists where the server holds an Anthropic key. If the
+     startup ping already told us it doesn't, go straight to the recall engines
+     rather than spending a slow round trip proving it. */
+  const canSearch = PROXY_CAPS.known ? PROXY_CAPS.search : PROXY_STATE !== "dead";
   const ENGINES = canSearch ? [WEB_ENGINE] : RECALL_ENGINES;
   function runSearch() {
     const run = ++searchRun.current;
