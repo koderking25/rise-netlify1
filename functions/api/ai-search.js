@@ -391,12 +391,12 @@ function geminiPayload(body, model, withSearch, extraRoom) {
   return payload;
 }
 
-async function geminiOnce(model, payload) {
+async function geminiOnce(model, payload, key) {
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
     ":generateContent?key=" +
-    encodeURIComponent(GEMINI_KEY);
+    encodeURIComponent(key);
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

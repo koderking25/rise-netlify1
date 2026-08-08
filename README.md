@@ -1,45 +1,100 @@
 # RISE
 
-Born in Canada. Reaching the world.
+Turn talent into impact. Youth volunteering, Canada.
 
-`index.html` is the whole app — one self-contained file, same as before. The two
-new folders are optional server pieces you deploy alongside it.
+`public/index.html` is the whole app — one self-contained file, same as before.
+The other folders are the server pieces you deploy alongside it.
 
 ```
-index.html                      the app
-netlify/functions/ai-search.js  AI proxy — Netlify
-functions/api/ai-search.js      AI proxy — Cloudflare Pages
+public/index.html               the app  ← the only thing served publicly
+src/index.js                    Worker entry point — routes /api/ai-search
+functions/api/ai-search.js      AI proxy — shared implementation
+netlify/functions/ai-search.js  AI proxy — Netlify adapter
+wrangler.toml                   Cloudflare Worker config
 ```
+
+The app lives in `public/` rather than the repo root on purpose: `wrangler`
+uploads the asset directory verbatim, so anything sitting beside `index.html`
+gets published. With the app at the root that would include `.env` — the live
+Anthropic key, served at `/.env` to anyone who asks. `public/` contains only
+what is safe to be public.
 
 ---
 
-## Setup — Cloudflare Pages
+## Global mode
 
-**Build configuration** (Pages → Settings → Builds & deployments):
+RISE ships as the Canadian product. The global build — world regions, the
+international remote library, "Born in Canada. Reaching the world." — is still
+in the file, switched off behind one constant near the top of the script:
 
-| Setting | Value |
-|---|---|
-| Framework preset | None |
-| Build command | *(leave empty)* |
-| Build output directory | `public` |
+```js
+const GLOBAL_MODE = false;   // true = global RISE
+```
 
-**Environment variable** (Pages → Settings → Environment variables → Production):
+Flip that single line and the whole product changes. Nothing else to edit
+except the static `<meta name="description">` in `<head>`, which carries both
+strings in a comment — the app rewrites it at runtime, but crawlers and link
+previews read the static tag.
 
-- `ANTHROPIC_API_KEY` = your `sk-ant-api03-...` key — click **Encrypt**
+**What it controls**
 
-Redeploy after adding it. `functions/api/ai-search.js` maps automatically to
-`/api/ai-search`, which is the path the app calls first.
+| | `false` (Canada) | `true` (global) |
+|---|---|---|
+| Locations | 79 Canadian, incl. "Virtual: anywhere in Canada" | + 9 world regions, "Remote: serve anywhere in the world" |
+| Offline library | `BUILTIN_OPPS` — Canadian orgs | also `GLOBAL_OPPS` — remote/international |
+| Hero, stats, marquee | `COPY` Canada column | `COPY` global column |
+| "From home" answer | stays on the Canadian shelf | opens the international shelf |
 
-Check it worked:
+**Why a flag and not two files.** A saved copy of the global build would drift
+out of date with every bug fix, matching improvement, and UI change made on the
+Canadian one — going global would mean re-applying all of it by hand. Both
+variants read the same code, so work done in either mode lands in both.
+
+The matching engine, scoring, proxy, and AI prompts are shared and unchanged by
+the flag. The prompts already say "based in Canada" only on the global path, so
+they read correctly in either mode.
+
+---
+
+## Setup — Cloudflare Workers
+
+This deploys as a **Worker with static assets**, not a Pages project. The two are
+different Cloudflare products and cannot be mixed: the `functions/` directory
+convention is Pages-only, so a Pages deploy of this repo would have no API route
+at all. `wrangler.toml` + `src/index.js` are what make `/api/ai-search` real, and
+what make the dashboard willing to accept a secret. If you ever see
+
+> Variables cannot be added to a Worker that only has static assets
+
+that is Cloudflare telling you it deployed the files without the server — check
+that `main = "src/index.js"` is present in `wrangler.toml`.
+
+**Deploy, then attach the key:**
 
 ```bash
-curl -s -X POST https://YOUR-SITE.pages.dev/api/ai-search \
-  -H 'content-type: application/json' -d '{"action":"ping"}'
+npx wrangler deploy
+```
+
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY
+```
+
+It prompts for the value and stores it encrypted — the key never enters the repo
+or your shell history. Paste your `sk-ant-api03-...` key at the prompt. Setting a
+secret redeploys automatically.
+
+`GEMINI_API_KEY` is optional and only used as a fallback if Anthropic errors.
+
+**Check it worked:**
+
+```bash
+curl -s -X POST https://YOUR-WORKER.workers.dev/api/ai-search -H 'content-type: application/json' -d '{"action":"ping"}'
 ```
 
 You want `{"ok":true,"provider":"anthropic","search":true}`. If `provider` is
 `gemini` or `search` is `false`, the key didn't take — that is the single cause
-of "these are starting points, not live matches".
+of "these are starting points, not live matches". The ping costs nothing; it
+reads the key without calling a model.
 
 `netlify.toml` and `netlify/functions/` are unused on Cloudflare. Harmless, and
 they keep Netlify available as a second option.
@@ -49,13 +104,20 @@ they keep Netlify available as a second option.
 The app now runs on **Claude Sonnet 5 with real web search**. Your key is in
 `.env` (gitignored, chmod 600) and **not** in `index.html`.
 
+On Cloudflare, `.env` is not read at deploy time — it's for local use only. The
+deployed Worker gets its key from `wrangler secret put ANTHROPIC_API_KEY`, as
+above. Setting one and not the other is the usual reason a working local build
+returns `provider: gemini` in production.
+
+Netlify, if you use it instead:
+
 ```bash
 netlify env:set ANTHROPIC_API_KEY "sk-ant-..."
 netlify deploy --prod
 ```
 
-Cloudflare: add it as a **secret** under Pages → Settings → Environment
-variables. Locally, `netlify dev` or the app falls back to recall-only.
+Locally, `npx wrangler dev` reads `.env` and gives you the real proxy; a plain
+static server has no `/api/ai-search`, so the app falls back to recall-only.
 
 ### Why the key is not in index.html
 
@@ -419,8 +481,9 @@ netlify env:set ANTHROPIC_API_KEY "sk-ant-..."   # optional, better results
 netlify deploy --prod
 ```
 
-**Cloudflare Pages** — add `GEMINI_API_KEY` (and optionally
-`ANTHROPIC_API_KEY`) as **secrets** under Settings → Environment variables.
+**Cloudflare Workers** — `npx wrangler secret put ANTHROPIC_API_KEY` (and
+optionally `GEMINI_API_KEY`). Not plain variables: secrets are encrypted at rest
+and hidden from the dashboard after entry.
 
 Then set both key constants in `index.html` to `""`. The client tries
 `/api/ai-search`, then `/.netlify/functions/ai-search`, and remembers which one
@@ -438,10 +501,19 @@ readable. Without the proxy, links are shown as unchecked rather than verified.
 
 ## Running locally
 
+The real thing — Worker, API route, and `.env` keys, same code path as
+production:
+
 ```bash
-python3 -m http.server 8791
+npx wrangler dev
 ```
 
-Open <http://localhost:8791>. Note that the proxy paths don't exist under a
-plain static server, so it falls through to the in-page key — use `netlify dev`
-or `wrangler pages dev` to exercise the proxy.
+Static only, no proxy (the app detects the missing route and runs recall-only):
+
+```bash
+python3 -m http.server 8791 --directory public
+```
+
+Note the `--directory public` — the app moved out of the repo root so that
+`.env` is not sitting in the folder that gets published. Serving the root would
+expose it locally too.
