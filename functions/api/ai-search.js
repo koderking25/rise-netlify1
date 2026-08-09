@@ -17,7 +17,9 @@
    with a single warm container.
    ══════════════════════════════════════════════════════════════════ */
 
-const CACHE_TTL = 1800; // seconds
+const CACHE_TTL = 1800; // seconds — personalised responses
+const SHARED_TTL = 6 * 3600; // cohort discovery: postings don't churn hourly
+const MAX_TTL = 24 * 3600;
 const RATE_MAX = 40; // requests per IP
 const RATE_WINDOW = 60 * 1000;
 const MAX_BODY = 60 * 1024;
@@ -85,14 +87,36 @@ export async function onRequestPost(ctx) {
     return reply(500, { error: "No provider key configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY." });
   }
 
-  /* Colo-wide cache, keyed on a hash of the request so identical questions
-     asked by different students share one upstream call. Guarded because the
-     cache is an optimisation, not a dependency — if `caches` is unavailable in
-     whatever runtime this lands in, matching should still work, just without
-     the saving. An optional speed-up must never be able to 500 the request. */
+  /* Colo-wide cache. Guarded because the cache is an optimisation, not a
+     dependency — if `caches` is unavailable in whatever runtime this lands in,
+     matching should still work, just without the saving. An optional speed-up
+     must never be able to 500 the request.
+
+     Two keying modes:
+
+       default    hash of the whole request body. Correct, but in practice it
+                  almost never hits: every matching request embeds the
+                  student's own capabilities, languages and free text, so two
+                  students asking the same question of the same city produce
+                  different bodies and each pays for its own web search.
+
+       cacheKey   an explicit identity supplied by the caller, used when the
+                  caller knows the answer is shared. Discovery — "what
+                  volunteer roles for music exist in Toronto?" — has the same
+                  answer for every student in that cohort, and web search is
+                  where essentially all the money goes. Keying it on
+                  city+talent+angle means the cohort buys that search once
+                  instead of once per student.
+
+     `cacheKey` must never carry anything personal; it is the cache identity
+     and is shared by definition. The caller is responsible for that, so
+     personalised calls simply omit it and fall back to the body hash. */
   const cache = typeof caches !== "undefined" && caches.default ? caches.default : null;
+  const cacheId = typeof body.cacheKey === "string" && body.cacheKey
+    ? "k/" + (await hash(body.cacheKey))
+    : "b/" + (await hash(raw));
   const cacheUrl = new URL(request.url);
-  cacheUrl.pathname = "/api/ai-search/" + (await hash(raw));
+  cacheUrl.pathname = "/api/ai-search/" + cacheId;
   const cacheReq = new Request(cacheUrl.toString(), { method: "GET" });
 
   if (cache && !body.fresh) {
@@ -132,14 +156,19 @@ export async function onRequestPost(ctx) {
     }
   }
 
+  /* Shared entries live much longer than personalised ones. Volunteer postings
+     do not turn over every half hour, and a cohort cache that expires in 30
+     minutes buys the same search again for the next class. Callers can ask for
+     a specific TTL; anything explicitly keyed defaults to the longer one. */
+  const ttl = Math.min(Number(body.cacheTtl) || (body.cacheKey ? SHARED_TTL : CACHE_TTL), MAX_TTL);
   if (cache && !body.fresh && ctx.waitUntil) {
     try {
       ctx.waitUntil(cache.put(cacheReq, new Response(JSON.stringify(out), {
-        headers: { "Content-Type": "application/json", "Cache-Control": "max-age=" + CACHE_TTL }
+        headers: { "Content-Type": "application/json", "Cache-Control": "max-age=" + ttl }
       })));
     } catch (e) {}
   }
-  return reply(200, out, { "X-Cache": "MISS" });
+  return reply(200, out, { "X-Cache": "MISS", "X-Cache-Ttl": String(ttl) });
 }
 
 function cors(env) {

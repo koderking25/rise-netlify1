@@ -1889,12 +1889,19 @@ const OPP_SCHEMA = {
       // The exact page this was read on. Without it in the schema the model
       // physically cannot return one, however hard the prompt asks.
       sourceUrl: S("STRING"),
+      /* Stated outright rather than guessed from the prose of `where`.
+         A student who answered REMOTE ONLY cannot attend in person at all —
+         that is a hard constraint, not a preference to be traded off against a
+         good skill match — so the pipeline needs a reliable flag to enforce
+         it. Inferring remoteness from free text got it wrong often enough to
+         put impossible roles at the top of the list. */
+      remote: S("BOOLEAN"),
       tags: {
         type: "ARRAY",
         items: S("STRING")
       }
     },
-    required: ["title", "org", "role", "whyMatch", "commitment", "firstStep", "where", "hours", "link"]
+    required: ["title", "org", "role", "whyMatch", "commitment", "firstStep", "where", "hours", "link", "remote"]
   }
 };
 const JUDGE_SCHEMA = {
@@ -2002,6 +2009,9 @@ const AI_TTL = 30 * 60 * 1000;
 const aiCache = new Map(); // key -> { at, value }
 const aiInflight = new Map(); // key -> Promise
 function cacheKeyOf(body) {
+  // An explicit cacheKey is the caller stating the identity of the answer, so
+  // honour it here too rather than re-deriving one from the prompt text.
+  if (typeof body.cacheKey === "string" && body.cacheKey) return "k:" + body.cacheKey;
   try {
     return JSON.stringify([body.model, body.system, body.messages, !!body.tools, body.schema, body.search]);
   } catch (e) {
@@ -4001,6 +4011,84 @@ Return fewer than ${want} rather than padding with roles any volunteer could do.
   return tagSources(extractJSON(res), res, "web");
 }
 
+/* ── SHARED DISCOVERY — the cohort pass ──────────────────────────────────
+   "What volunteer roles for music exist in Toronto right now?" has the same
+   answer for every student in that city and category. Web search is where
+   essentially the entire bill goes, so asking it once per student was paying
+   many times for one answer: at ~$0.15 a search, a class of thirty consumed a
+   $5 daily budget before lunch and everyone after that silently got the
+   offline library.
+
+   This pass is deliberately IMPERSONAL. Nothing about the individual goes in —
+   no capabilities, no languages, no free text, no name. That is what makes it
+   safe to share, and the cache key says exactly what it contains: place,
+   category, angle, and whether the role must be remote. Those four change
+   which organizations exist; nothing else does.
+
+   Personalisation has not been dropped, it has moved. The judge downstream
+   scores this pool against the individual student, which is the right division
+   of labour: discovery answers "what is out there", judging answers "what is
+   right for you". It also produces BETTER matches, not merely cheaper ones —
+   the pool is larger (ten roles rather than five) and accumulates across the
+   four angles, so the judge chooses from a much wider field than a single
+   personalised search ever returned. */
+/* The four ANGLES above are phrased for the personalised search — they talk
+   about "the student's capability words" and "the population they want to
+   serve". In a prompt that deliberately contains no student, those refer to
+   nothing and the model has to guess what it is being asked. Same four search
+   strategies, rewritten for a category-and-city question. */
+const SHARED_ANGLES = [`START HERE: search the category as a role title plus the place. Look for the smallest, most specific organizations that come back — a single neighbourhood house or one hospital programme beats a national charity's generic page.`, `START HERE: search the local volunteer-matching boards and the city's own volunteer portal for currently-listed postings in this category. Open the individual listings, not the category pages.`, `START HERE: think about which institutions structurally need this category of help — hospitals, long-term care homes, libraries, school boards, settlement agencies, community centres, animal shelters — then search those named institution types in this place.`, `START HERE: search for the populations this category most often serves in this place — seniors, newcomers, children, people with disabilities — find the organizations serving them, then check each one's volunteer page for roles in this category.`];
+async function sharedDiscovery(talent, location, opts = {}) {
+  const loc = ALL_LOCS.find(l => l.id === location) || {
+    label: location
+  };
+  const tal = TALENTS.find(t => t.id === talent);
+  const remote = !!opts.virtualOnly;
+  const angle = (opts.angle || 0) % SHARED_ANGLES.length;
+  const want = opts.count || 10;
+  const place = isGlobalLoc(loc.id) ? loc.label : `${loc.label}, Canada`;
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 3600,
+    temperature: 0.3,
+    schema: OPP_SCHEMA,
+    // Shared identity. Must stay free of anything personal — see above.
+    cacheKey: `disc:v1:${loc.id}:${talent}:${angle}:${remote ? "r" : "l"}`,
+    search: Object.assign({
+      maxUses: opts.maxUses || 4
+    }, searchGeo(loc) || {}),
+    messages: [{
+      role: "user",
+      content: `Find ${want} SPECIFIC volunteer ROLES that a 14-18 year old could apply to. Search the live web, open the actual listings, then call emit once.
+
+TODAY IS ${new Date().toISOString().slice(0, 10)}. Look for positions open THIS WEEK. Prefer a dated, currently-open posting over an evergreen "we sometimes need volunteers" page. If a listing shows a posting date, deadline, term start or intake session, put it in "commitment".
+
+${SHARED_ANGLES[angle]}
+
+WHERE
+- ${remote ? "REMOTE ONLY — the role must be doable entirely from home." : place}
+- Category: ${tal?.label || talent}
+
+WHERE ELSE TO LOOK — pages that carry real postings, not general advice:
+  · the local volunteer centre and its listings board
+  · ${remote ? "remote and virtual volunteering boards" : `"${loc.short || loc.label} volunteer" listing sites`}
+  · named organizations' own Volunteer / Get Involved pages
+
+This is a shortlist a careful advisor will narrow down afterwards, so RANGE MATTERS. Return roles that differ from each other — different organizations, different populations served, different time commitments, different specific skills. Ten near-identical tutoring roles are worth less than six genuinely different ones.
+
+State plainly what each role actually involves in a session and what skill it needs. Do not tailor to any particular student; describe the role as posted.
+
+Set "remote" to true ONLY if the whole role can be done from home with no in-person attendance. A hybrid role, or one with any required on-site shift, is false.
+
+For every result set "sourceUrl" to the exact page you read it on, and "link" to the organization's root homepage. If a posting names a coordinator or an email, put it in firstStep and contactEmail. Never invent one.
+
+Return fewer than ${want} rather than padding with roles any volunteer could do.`
+    }]
+  }, 90000, 1);
+  return tagSources(extractJSON(res), res, "web");
+}
+
 /* PRECISION PASS — only used by Load More, where the student has already seen
    the first set and is asking for different ground. Runs the student's own
    words as search terms rather than the category. */
@@ -4216,6 +4304,31 @@ function clamp(n, lo, hi) {
   n = Number(n);
   if (!isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, Math.round(n)));
+}
+
+/* ── STAGE 3.5: hard constraints ──────────────────────────────────────────
+   Some of what a student tells us is a preference to be weighed. Some of it is
+   a wall. "I can only volunteer from home" is a wall: an in-person role is not
+   a worse match for that student, it is an impossible one.
+
+   The judge was the only thing enforcing this, through a 20-point logistics
+   dimension inside a 100-point score. A role that nailed the capability match
+   could therefore score in the seventies and sit at the top of the list while
+   being something the student physically cannot attend. The prompt says
+   "anything in-person scores 0 on logistics", but a prompt is a request, not a
+   guarantee.
+
+   So walls are enforced here, in code, after the judge has had its say.
+   Returns a reason string when the role breaks a stated constraint. */
+function constraintBreak(opp, prefs) {
+  if (!prefs) return null;
+  if (prefs.virtualOnly) {
+    // Trust the model's explicit flag; fall back to the prose only when the
+    // field is missing (older cached results predate the schema change).
+    const isRemote = typeof opp.remote === "boolean" ? opp.remote : /remote|virtual|online|from home|anywhere/i.test(`${opp.where || ""} ${(opp.tags || []).join(" ")}`);
+    if (!isRemote) return "Needs you on site — you asked for remote only";
+  }
+  return null;
 }
 
 /* ── STAGE 4: blend ──
@@ -5161,25 +5274,32 @@ function ResultControls({
   setSortBy,
   minVerdict,
   setMinVerdict,
+  format,
+  setFormat,
+  onlyActionable,
+  setOnlyActionable,
   counts,
   judged
 }) {
   const Btn = ({
     active,
     onClick,
-    children
+    children,
+    disabled
   }) => /*#__PURE__*/React.createElement("button", {
     onClick: onClick,
     "aria-pressed": active,
+    disabled: disabled,
     style: {
       padding: "6px 11px",
       borderRadius: 8,
       border: "1.5px solid " + (active ? "var(--fire)" : "var(--ink-5)"),
       background: active ? "var(--ember)" : "transparent",
-      color: active ? "var(--fire)" : "var(--ink-3)",
+      color: disabled ? "var(--ink-4)" : active ? "var(--fire)" : "var(--ink-3)",
       fontSize: 11.5,
       fontWeight: active ? 600 : 500,
-      cursor: "pointer",
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? .5 : 1,
       fontFamily: "inherit"
     }
   }, children);
@@ -5239,7 +5359,40 @@ function ResultControls({
   }, "Good+ (", counts.good, ")"), /*#__PURE__*/React.createElement(Btn, {
     active: minVerdict === "strong",
     onClick: () => setMinVerdict("strong")
-  }, "Strong (", counts.strong, ")")));
+  }, "Strong (", counts.strong, ")")),
+  /* Format and actionability filter on data every result already carries, so
+     they cost nothing and need no second search. Each option shows its own
+     count, which stops a student selecting a filter that silently empties the
+     list — and a zero-count option is disabled rather than merely misleading. */
+  (counts.remote > 0 || counts.onsite > 0) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Format"), /*#__PURE__*/React.createElement(Btn, {
+    active: format === "any",
+    onClick: () => setFormat("any")
+  }, "Any"), /*#__PURE__*/React.createElement(Btn, {
+    active: format === "remote",
+    onClick: () => counts.remote && setFormat("remote"),
+    disabled: !counts.remote
+  }, "Remote (", counts.remote, ")"), /*#__PURE__*/React.createElement(Btn, {
+    active: format === "onsite",
+    onClick: () => counts.onsite && setFormat("onsite"),
+    disabled: !counts.onsite
+  }, "In person (", counts.onsite, ")")), counts.actionable > 0 && /*#__PURE__*/React.createElement(Btn, {
+    active: onlyActionable,
+    onClick: () => setOnlyActionable(v => !v)
+  }, "Can apply now (", counts.actionable, ")"));
 }
 
 /* Honest status about where these results came from. The previous build
@@ -5651,7 +5804,20 @@ function ResultCardBase({
   React.createElement("span", {
     className: "badge badge-neutral",
     title: "A real organization from our built-in list — not tailored to your answers"
-  }, "Starting point")), /*#__PURE__*/React.createElement("h3", {
+  }, "Starting point"),
+  // Says plainly why a role sits at the bottom, instead of leaving the student
+  // to wonder why a strong-looking match was ranked last.
+  opp._blocked &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge",
+    style: {
+      background: "var(--danger-bg)",
+      color: "var(--danger)",
+      border: "1px solid rgba(196,40,40,.22)"
+    },
+    title: opp._blocked
+  }, "⚠︎ ", opp._blocked)), /*#__PURE__*/React.createElement("h3", {
     className: "serif",
     style: {
       fontSize: 20,
@@ -7618,6 +7784,8 @@ function MatcherPage({
   const [judging, setJudging] = useState(false);
   const [sortBy, setSortBy] = useState("match");
   const [minVerdict, setMinVerdict] = useState("all");
+  const [format, setFormat] = useState("any"); // any | remote | onsite
+  const [onlyActionable, setOnlyActionable] = useState(false);
   const searchRun = useRef(0);
   const loadMoreTurn = useRef(0);
   // Persisted so reloading the page doesn't reset everyone to the same opening
@@ -7793,15 +7961,23 @@ function MatcherPage({
             continue;
           }
           if (j.verdict === "reject") continue; // the judge doesn't believe this one
+          /* A stated wall outranks the score. Dropping these outright would be
+             worse than showing them: the student would just wonder why a
+             search returned so little. They are kept, marked, and sorted
+             below everything they could actually do. */
+          const broke = constraintBreak(o, prefs);
           const b = blendScore(o._det != null ? o._det : o._score, j);
           next.push(Object.assign({}, o, {
+            _blocked: broke || null,
             _score: b.score,
             _detPct: b.det,
             _aiScore: b.ai,
             _judge: j
           }));
         }
-        next.sort((a, b) => (b._score || 0) - (a._score || 0));
+        // Anything that breaks a stated constraint sorts below everything the
+        // student can actually do, whatever it scored.
+        next.sort((a, b) => (a._blocked ? 1 : 0) - (b._blocked ? 1 : 0) || (b._score || 0) - (a._score || 0));
         return next;
       });
       // The judge's evidence line is sharper than the generator's own pitch,
@@ -7835,14 +8011,55 @@ function MatcherPage({
      is four web-search bills for heavily overlapping output — the same three
      organizations found by four routes — and it made every search slower for
      no gain. Rigour comes from the judge below, not from asking four times. */
+  /* Two phases, cheapest first.
+
+     Phase A asks the shared, impersonal question and is cached per
+     city+category+angle, so the first student of the day in a cohort pays for
+     the search and everyone after reads it for nothing. Two angles are pulled
+     so the pool is wide from the start; both are cache lookups after the first
+     run.
+
+     Phase B is the old personalised search, and now runs ONLY when phase A
+     could not field enough distinct organizations for this student. That keeps
+     the student's own words in play exactly where they earn their cost —
+     someone with an unusual skill still gets a search tailored to it — while
+     the common case stops paying for one.
+
+     `PHASE_A_FLOOR` is the number of distinct organizations below which the
+     shared pool is judged too thin to rank against. */
+  const PHASE_A_FLOOR = 6;
   const WEB_ENGINE = {
     id: "web",
     label: "Searching live listings",
-    fn: ex => webSearchOpps(talent, location, spTxt, prefs, ex, {
-      count: 5,
-      maxUses: 3,
-      angle: angleRef.current
-    }),
+    fn: async ex => {
+      const a0 = angleRef.current;
+      const settled = await safeAllSettled([sharedDiscovery(talent, location, {
+        angle: a0,
+        virtualOnly: prefs.virtualOnly,
+        count: 10,
+        maxUses: 4
+      }), sharedDiscovery(talent, location, {
+        angle: (a0 + 1) % 4,
+        virtualOnly: prefs.virtualOnly,
+        count: 8,
+        maxUses: 3
+      })]);
+      const pool = [];
+      for (const r of settled) if (r.status === "fulfilled" && Array.isArray(r.value)) pool.push(...r.value);
+      const distinct = new Set(pool.map(o => orgKey(o.org)).filter(Boolean)).size;
+      if (distinct >= PHASE_A_FLOOR) return pool;
+      // Thin cohort pool — spend on a search shaped by this student's words.
+      try {
+        const personal = await webSearchOpps(talent, location, spTxt, prefs, ex, {
+          count: 5,
+          maxUses: 3,
+          angle: a0
+        });
+        return pool.concat(Array.isArray(personal) ? personal : []);
+      } catch (e) {
+        return pool;
+      }
+    },
     delay: 0
   };
   const RECALL_ENGINES = [{
@@ -7884,6 +8101,10 @@ function MatcherPage({
     setJudging(false);
     setSortBy("match");
     setMinVerdict("all");
+    // Filters are about the previous result set. Carrying them into a new
+    // search would silently hide most of what it just found.
+    setFormat("any");
+    setOnlyActionable(false);
     seenOrgs.current = new Set();
     go("searching");
     /* No result prefill.
@@ -8032,11 +8253,24 @@ function MatcherPage({
     weak: 1
   };
   const judged = results.some(o => o._judge);
+  /* Is this role doable entirely from home? The model now states it outright;
+     the prose check is only for results cached before that field existed. */
+  const isRemoteRole = o => typeof o.remote === "boolean" ? o.remote : /remote|virtual|online|from home|anywhere/i.test(`${o.where || ""} ${(o.tags || []).join(" ")}`);
+  // Can the student act on this today, without hunting for who to ask?
+  const isActionable = o => !!(o.contactEmail || o.firstStep);
   const counts = {
     strong: results.filter(o => verdictOf(o) === "strong").length,
-    good: results.filter(o => RANK[verdictOf(o)] >= 2).length
+    good: results.filter(o => RANK[verdictOf(o)] >= 2).length,
+    remote: results.filter(isRemoteRole).length,
+    onsite: results.filter(o => !isRemoteRole(o)).length,
+    actionable: results.filter(isActionable).length
   };
-  const visible = results.filter(o => minVerdict === "all" || RANK[verdictOf(o)] >= RANK[minVerdict]).slice().sort((a, b) => {
+  const visible = results.filter(o => minVerdict === "all" || RANK[verdictOf(o)] >= RANK[minVerdict]).filter(o => format === "any" || (format === "remote" ? isRemoteRole(o) : !isRemoteRole(o))).filter(o => !onlyActionable || isActionable(o)).slice().sort((a, b) => {
+    // A role that breaks a stated constraint stays at the bottom under every
+    // sort — sorting by "least time" must not float an impossible role to the
+    // top just because it asks for one hour.
+    const blocked = (a._blocked ? 1 : 0) - (b._blocked ? 1 : 0);
+    if (blocked) return blocked;
     if (sortBy === "time") return hoursNum(a) - hoursNum(b);
     if (sortBy === "confidence") return (b._judge?.credibility || 0) - (a._judge?.credibility || 0) || (b._score || 0) - (a._score || 0);
     return (b._score || 0) - (a._score || 0);
@@ -9076,9 +9310,35 @@ function MatcherPage({
     setSortBy: setSortBy,
     minVerdict: minVerdict,
     setMinVerdict: setMinVerdict,
+    format: format,
+    setFormat: setFormat,
+    onlyActionable: onlyActionable,
+    setOnlyActionable: setOnlyActionable,
     counts: counts,
     judged: judged
-  }), visible.length === 0 && /*#__PURE__*/React.createElement("p", {
+  }), visible.length === 0 && results.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "18px 0"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.7,
+      marginBottom: 10
+    }
+  }, "No matches left with these filters — ", results.length, " were hidden."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setMinVerdict("all");
+      setFormat("any");
+      setOnlyActionable(false);
+    },
+    className: "btn btn-ghost",
+    style: {
+      fontSize: 12,
+      padding: "7px 14px"
+    }
+  }, "Clear filters")), visible.length === 0 && results.length === 0 && /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 13,
       color: "var(--ink-3)",

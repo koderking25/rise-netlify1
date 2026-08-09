@@ -21,6 +21,51 @@ what is safe to be public.
 
 ---
 
+## How a search is paid for
+
+Web search is where essentially the whole AI bill goes — roughly $0.09–0.19 a
+search against a default $5/day cap. The old pipeline ran one **personalised**
+search per student, and because every request embedded that student's own
+capabilities, languages and free text, the proxy's cache could never hit. Cost
+scaled linearly with students: a class of thirty exhausted the daily budget
+before lunch and everyone after that silently got the offline library.
+
+Discovery and judging are now separate, because they have opposite economics:
+
+| | Question | Personal? | Cached |
+|---|---|---|---|
+| **Discovery** | "What volunteer roles for music exist in Toronto?" | No | Yes — `city:talent:angle:remote`, 6h |
+| **Judging** | "How well does each of these fit *this* student?" | Yes | No |
+
+The first student in a cohort pays for the search; everyone after reads it for
+nothing. Measured against the real proxy handler, three students sharing a key
+produce **one** upstream call instead of three.
+
+It also matches *better*, not just cheaper. Discovery returns a wider pool (ten
+roles rather than five) and accumulates across four angles, so the judge picks
+from a much larger field than a single personalised search ever offered. When
+the shared pool can't field enough distinct organizations for a particular
+student — someone with an unusual skill — the personalised search still runs.
+It just no longer runs for everybody.
+
+`cacheKey` must never contain anything personal: it is the cache identity and
+is shared by definition. Personalised calls simply omit it and fall back to
+hashing the request body.
+
+## Hard constraints
+
+Some answers are preferences to be weighed; some are walls. "I can only
+volunteer from home" is a wall — an in-person role isn't a worse match, it's an
+impossible one.
+
+That used to be enforced only by the judge, through a 20-point logistics
+dimension inside a 100-point score, so a role that nailed the capability match
+could score in the seventies and top the list while being something the student
+physically cannot attend. Results now carry an explicit `remote` boolean and
+`constraintBreak()` enforces walls in code after the judge has had its say.
+Blocked roles are kept, labelled with the reason, and sorted below everything
+the student can actually do — under every sort order.
+
 ## Global mode
 
 RISE ships as the Canadian product. The global build — world regions, the
