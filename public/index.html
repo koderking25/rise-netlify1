@@ -278,13 +278,36 @@ if (typeof window !== "undefined" && !window.riseCloud) {
             uid: u.id,
             email: u.email,
             name: u.user_metadata?.full_name || u.user_metadata?.name || (u.email || "").split("@")[0],
-            username: u.user_metadata?.username || u.user_metadata?.full_name || ""
+            username: u.user_metadata?.username || u.user_metadata?.full_name || "",
+            /* Provisional until the profile row is read. Defaulting to
+               "volunteer" rather than null is deliberate: every existing
+               account is a volunteer, and it means the app renders the
+               volunteer experience immediately instead of flashing a
+               loading state at people whose role never changes. */
+            role: "volunteer"
           };
+          await loadRole(s.access_token);
         } else if (r.status === 401 && s.refresh_token) return refresh();else user = null;
       } catch (e) {
         user = null;
       }
       notify();
+    }
+    /* Reads public.profiles.role. Additive and failure-tolerant on purpose:
+       if the table does not exist yet, or the request fails, the user stays a
+       volunteer and the app behaves exactly as it did before Stage 1. The
+       volunteer path must never depend on this call succeeding. */
+    async function loadRole(token) {
+      if (!user) return;
+      try {
+        const r = await fetch(`${SUPA_URL}/rest/v1/profiles?id=eq.${user.uid}&select=role`, {
+          headers: H(token)
+        });
+        if (!r.ok) return;
+        const rows = await r.json();
+        const role = rows && rows[0] && rows[0].role;
+        if (role === "organization" || role === "admin") user.role = role;
+      } catch (e) {}
     }
     async function refresh() {
       try {
@@ -340,6 +363,41 @@ if (typeof window !== "undefined" && !window.riseCloud) {
         } catch (e) {}
       }
     });
+    /* Inserts the organizations row. Kept as a private helper rather than a
+       public method so there is exactly one place that writes this table, and
+       one place to audit for what it does and does not send. */
+    async function createOrganization(f, token) {
+      const row = {
+        owner_id: user.uid,
+        name: (f.name || "").trim(),
+        org_type: f.orgType || null,
+        registration_number: (f.registrationNumber || "").trim() || null,
+        website_url: (f.websiteUrl || "").trim() || null,
+        address_line1: (f.address1 || "").trim() || null,
+        address_line2: (f.address2 || "").trim() || null,
+        city: (f.city || "").trim() || null,
+        province: f.province || null,
+        postal_code: (f.postalCode || "").trim() || null,
+        contact_name: (f.contactName || "").trim() || null,
+        contact_position: (f.contactPosition || "").trim() || null,
+        contact_email: (f.contactEmail || "").trim().toLowerCase() || null,
+        contact_phone: (f.contactPhone || "").trim() || null
+        // verification_status intentionally absent — see signUpOrganization.
+      };
+      const r = await fetch(SUPA_URL + "/rest/v1/organizations", {
+        method: "POST",
+        headers: {
+          ...H(token),
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify(row)
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error("Couldn't save your organization details. " + t.slice(0, 160));
+      }
+      return await r.json().catch(() => null);
+    }
     async function authPost(path, body) {
       let r;
       try {
@@ -481,6 +539,69 @@ if (typeof window !== "undefined" && !window.riseCloud) {
         // throwing rendered this success in the red error box.
         return { needsConfirmation: true };
       },
+
+      /* ── Organization sign-up ──────────────────────────────────────────
+         Creates the auth user with account_type in metadata, which is what
+         the database trigger reads to set profiles.role. The client asks for
+         a role; it does not assign one — and the trigger only honours
+         'organization', so a hand-crafted payload asking for 'admin' still
+         lands as a volunteer.
+
+         The organizations row is then inserted separately, because it needs
+         the new user's access token to satisfy the owner_id RLS check.
+
+         Note what is NOT sent: verification_status. The column is revoked
+         from `authenticated` at the Postgres privilege layer, so including it
+         would fail the request outright rather than silently succeed. New
+         organizations are unverified by database default, and only something
+         holding the service_role key can change that. */
+      async signUpOrganization(fields) {
+        const addr = (fields.email || "").trim().toLowerCase();
+        const d = await authPost("/auth/v1/signup", {
+          email: addr,
+          password: fields.password,
+          data: {
+            account_type: "organization",
+            full_name: (fields.contactName || "").trim()
+          }
+        });
+
+        const token = d.access_token;
+        if (!token) {
+          // Email confirmation is on. The auth user and its profile row exist,
+          // but there is no session yet to insert the organization under. The
+          // dashboard creates it on first sign-in instead.
+          return { needsConfirmation: true, pendingOrg: fields };
+        }
+        await setSession(d);
+        await createOrganization(fields, token);
+        return { needsConfirmation: false };
+      },
+
+      /* Used by the dashboard when a confirmed org signs in and has no
+         organization row yet — the confirmation-required path above. */
+      async ensureOrganization(fields) {
+        if (!session || !user) throw new Error("Sign in first.");
+        const existing = await this.myOrganization();
+        if (existing) return existing;
+        await createOrganization(fields, session.access_token);
+        return await this.myOrganization();
+      },
+
+      async myOrganization() {
+        if (!session || !user) return null;
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/organizations?owner_id=eq.${user.uid}&select=*`, {
+            headers: H(session.access_token)
+          });
+          if (!r.ok) return null;
+          const rows = await r.json();
+          return rows && rows[0] ? rows[0] : null;
+        } catch (e) {
+          return null;
+        }
+      },
+
       async signOut() {
         if (bridge) return call("signOut");
         await setSession(null);
@@ -11738,12 +11859,586 @@ function Footer({
     },
     onMouseEnter: e => e.target.style.color = "var(--fire)",
     onMouseLeave: e => e.target.style.color = "var(--ink-3)"
-  }, lbl))), /*#__PURE__*/React.createElement("span", {
+  }, lbl)),
+  /* The only organization-facing entry point in the volunteer app, and the
+     only volunteer-visible change in Stage 1. Deliberately here and not in
+     the main navigation: the primary nav belongs to the 14-year-old using
+     this, and nothing an organization needs should compete for that space.
+     A real link rather than a click handler so it can be opened in a new
+     tab, shared, and read by a screen reader as a destination. */
+  /*#__PURE__*/React.createElement("a", {
+    href: "?org",
+    style: {
+      fontSize: 12,
+      color: "var(--ink-4)",
+      cursor: "pointer",
+      fontWeight: 500,
+      textDecoration: "none",
+      transition: "color .15s"
+    },
+    onMouseEnter: e => e.target.style.color = "var(--fire)",
+    onMouseLeave: e => e.target.style.color = "var(--ink-4)"
+  }, "For organizations")), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 11,
       color: "var(--ink-4)"
     }
   }, "Neil & Rayan Mekouar · Canada 2026")));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ORGANIZATIONS — Stage 1
+
+   Everything organization-facing lives in this block. It is deliberately
+   self-contained and reached only by an explicit route, so the volunteer
+   app renders exactly as it did before: no shared component was modified to
+   add it, and no organization code runs for a volunteer session.
+
+   Stage 1 is signup, auth and a dashboard shell. Organizations cannot post
+   anything yet, nothing they enter is visible to a volunteer, and there is
+   no contact path of any kind between an organization and a student.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const ORG_TYPES = ["Registered charity", "Non-profit", "School or school board", "Hospital or health authority", "Library", "Municipality or public agency", "Community group", "Other"];
+
+function OrgField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+  required,
+  hint,
+  autoComplete
+}) {
+  return /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, label, required && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--fire)"
+    },
+    "aria-hidden": "true"
+  }, " *")), /*#__PURE__*/React.createElement("input", {
+    className: "input",
+    type: type,
+    value: value,
+    required: !!required,
+    placeholder: placeholder || "",
+    autoComplete: autoComplete,
+    onChange: e => onChange(e.target.value)
+  }), hint && /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginTop: 4,
+      lineHeight: 1.5
+    }
+  }, hint));
+}
+
+/* ── Registration ────────────────────────────────────────────────────── */
+function OrgSignupPage({
+  go
+}) {
+  const [f, setF] = useState({
+    name: "",
+    orgType: ORG_TYPES[0],
+    registrationNumber: "",
+    websiteUrl: "",
+    address1: "",
+    address2: "",
+    city: "",
+    province: "",
+    postalCode: "",
+    contactName: "",
+    contactPosition: "",
+    contactEmail: "",
+    contactPhone: "",
+    email: "",
+    password: ""
+  });
+  const set = k => v => setF(p => ({
+    ...p,
+    [k]: v
+  }));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  const canSubmit = f.name.trim() && f.contactName.trim() && f.contactEmail.trim() && f.email.trim() && f.password.length >= 6 && !busy;
+
+  const submit = async e => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setErr("");
+    setBusy(true);
+    try {
+      const res = await window.riseCloud.signUpOrganization(f);
+      if (res && res.needsConfirmation) {
+        try {
+          sessionStorage.setItem("rise_pending_org", JSON.stringify(f));
+        } catch (e2) {}
+      }
+      setDone(true);
+    } catch (e2) {
+      setErr(e2.message || "Something went wrong — try again.");
+    }
+    setBusy(false);
+  };
+
+  if (done) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "page-wrap",
+      style: {
+        maxWidth: 620,
+        margin: "0 auto",
+        padding: "48px 20px 80px"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "card"
+    }, /*#__PURE__*/React.createElement("h1", {
+      className: "serif",
+      style: {
+        fontSize: 26,
+        color: "var(--ink)",
+        marginBottom: 10
+      }
+    }, "Registration received"), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 14,
+        color: "var(--ink-2)",
+        lineHeight: 1.7,
+        marginBottom: 14
+      }
+    }, "Your organization has been created and is ", /*#__PURE__*/React.createElement("strong", null, "awaiting verification"), ". A person at RISE reviews every organization before anything it posts can reach a student. Nothing you enter is visible to students until that review is done."), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 13,
+        color: "var(--ink-3)",
+        lineHeight: 1.7
+      }
+    }, "If your project asks for email confirmation, check your inbox first, then sign in."), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-fire",
+      style: {
+        marginTop: 18
+      },
+      onClick: () => go("home")
+    }, "Back to RISE")));
+  }
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "page-wrap",
+    style: {
+      maxWidth: 620,
+      margin: "0 auto",
+      padding: "48px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".12em",
+      textTransform: "uppercase",
+      color: "var(--ink-3)",
+      marginBottom: 8
+    }
+  }, "For organizations"), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: 32,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "Register your organization"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      marginBottom: 8
+    }
+  }, "RISE connects Canadian students aged 14 to 18 with real volunteer roles. Because those students are minors, every organization is reviewed by a person before it can post anything."),
+  /* Said plainly and up front. An organization should know from the first
+     screen that verification is a human decision, not a form submission. */
+  /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9,
+      alignItems: "flex-start",
+      padding: "12px 14px",
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 10,
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 14,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, "Registering does not make you verified. We check your registration number, your website, and your contact details before approving anything.")), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 16
+    }
+  }, err), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    noValidate: true
+  }, /*#__PURE__*/React.createElement(OrgSection, {
+    title: "The organization"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Organization name",
+    value: f.name,
+    onChange: set("name"),
+    required: true,
+    autoComplete: "organization"
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Type"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: f.orgType,
+    onChange: e => set("orgType")(e.target.value)
+  }, ORG_TYPES.map(t => /*#__PURE__*/React.createElement("option", {
+    key: t,
+    value: t
+  }, t)))), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Charity or registration number",
+    value: f.registrationNumber,
+    onChange: set("registrationNumber"),
+    placeholder: "e.g. 123456789RR0001",
+    hint: "CRA business number for registered charities. We check this during review."
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Website",
+    value: f.websiteUrl,
+    onChange: set("websiteUrl"),
+    type: "url",
+    placeholder: "https://",
+    hint: "Used to confirm the organization is real and currently operating.",
+    autoComplete: "url"
+  }), /*#__PURE__*/React.createElement(OrgSection, {
+    title: "Registered address"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Street address",
+    value: f.address1,
+    onChange: set("address1"),
+    autoComplete: "address-line1"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Suite or unit",
+    value: f.address2,
+    onChange: set("address2"),
+    autoComplete: "address-line2"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "City",
+    value: f.city,
+    onChange: set("city"),
+    autoComplete: "address-level2"
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Province or territory"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: f.province,
+    onChange: e => set("province")(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select…"), PROVINCES.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.name
+  }, p.name)))), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Postal code",
+    value: f.postalCode,
+    onChange: set("postalCode"),
+    autoComplete: "postal-code"
+  }), /*#__PURE__*/React.createElement(OrgSection, {
+    title: "Contact person"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Full name",
+    value: f.contactName,
+    onChange: set("contactName"),
+    required: true,
+    autoComplete: "name"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Position",
+    value: f.contactPosition,
+    onChange: set("contactPosition"),
+    placeholder: "e.g. Volunteer Coordinator"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Work email",
+    value: f.contactEmail,
+    onChange: set("contactEmail"),
+    type: "email",
+    required: true,
+    hint: "An address at your organization's own domain helps verification.",
+    autoComplete: "email"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Phone",
+    value: f.contactPhone,
+    onChange: set("contactPhone"),
+    type: "tel",
+    autoComplete: "tel"
+  }), /*#__PURE__*/React.createElement(OrgSection, {
+    title: "Sign-in details"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Login email",
+    value: f.email,
+    onChange: set("email"),
+    type: "email",
+    required: true,
+    autoComplete: "email"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Password",
+    value: f.password,
+    onChange: set("password"),
+    type: "password",
+    required: true,
+    hint: "At least 6 characters.",
+    autoComplete: "new-password"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn btn-fire",
+    disabled: !canSubmit,
+    style: {
+      width: "100%",
+      justifyContent: "center",
+      marginTop: 8,
+      opacity: canSubmit ? 1 : .55
+    }
+  }, busy ? "Creating your account…" : "Register organization"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      textAlign: "center",
+      marginTop: 14
+    }
+  }, "Already registered? ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer"
+    },
+    onClick: () => go("home")
+  }, "Sign in from the main site"))));
+}
+
+function OrgSection({
+  title
+}) {
+  return /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".1em",
+      textTransform: "uppercase",
+      color: "var(--ink-4)",
+      margin: "26px 0 12px",
+      paddingTop: 14,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, title);
+}
+
+/* ── Dashboard shell ─────────────────────────────────────────────────── */
+function OrgDashboard() {
+  const user = useAuth();
+  const [org, setOrg] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let o = await window.riseCloud.myOrganization();
+      // Recovers the confirmation-required signup path: the auth user was
+      // created before a session existed, so the organization row could not be
+      // inserted then. First sign-in finishes the job.
+      if (!o) {
+        try {
+          const pending = sessionStorage.getItem("rise_pending_org");
+          if (pending) {
+            o = await window.riseCloud.ensureOrganization(JSON.parse(pending));
+            sessionStorage.removeItem("rise_pending_org");
+          }
+        } catch (e) {}
+      }
+      if (!cancelled) {
+        setOrg(o);
+        setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user && user.uid]);
+
+  const status = (org && org.verification_status) || "unverified";
+  const statusCopy = {
+    unverified: ["Awaiting review", "A person at RISE will check your registration number, website and contact details. Nothing you post can reach a student until that is done."],
+    in_review: ["In review", "We are checking your details now. You'll hear from us at your contact email."],
+    verified: ["RISE Verified", "Your organization has been verified. You can post volunteer opportunities."],
+    suspended: ["Suspended", "Your organization is currently suspended. Contact RISE for details."]
+  }[status] || ["Awaiting review", ""];
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "page-wrap",
+    style: {
+      maxWidth: 720,
+      margin: "0 auto",
+      padding: "48px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".12em",
+      textTransform: "uppercase",
+      color: "var(--ink-3)",
+      marginBottom: 8
+    }
+  }, "Organization dashboard"), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: 30,
+      color: "var(--ink)",
+      marginBottom: 20
+    }
+  }, org ? org.name : "Your organization"), !loaded && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Loading…"), loaded && !org && /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.7
+    }
+  }, "We couldn't find an organization on this account yet. If you just confirmed your email, sign out and back in once.")), loaded && org && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 15,
+    color: status === "verified" ? "var(--success)" : "var(--fire)"
+  }), /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: "var(--ink)"
+    }
+  }, statusCopy[0])), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.7
+    }
+  }, statusCopy[1])), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "Your details"), [["Type", org.org_type], ["Registration number", org.registration_number], ["Website", org.website_url], ["Contact", org.contact_name], ["Contact email", org.contact_email], ["Phone", org.contact_phone]].filter(([, v]) => v).map(([k, v]) => /*#__PURE__*/React.createElement("div", {
+    key: k,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 16,
+      padding: "7px 0",
+      borderBottom: "1px solid var(--ink-6)",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink-3)"
+    }
+  }, k), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink)",
+      textAlign: "right"
+    }
+  }, v)))),
+  /* Stage 2 replaces this. Left visible so the shape of what is coming is
+     obvious, and so it is clear nothing is postable yet. */
+  /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      opacity: .65
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 6
+    }
+  }, "Volunteer opportunities"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.7
+    }
+  }, "Posting opens once your organization is verified."))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      marginTop: 22
+    },
+    onClick: () => window.riseCloud.signOut()
+  }, "Sign out"));
 }
 
 /* ═══════════════════════════════════════
@@ -12781,6 +13476,63 @@ function App() {
     de.setAttribute("data-theme", settings.darkMode ? "dark" : "light");
     de.style.colorScheme = settings.darkMode ? "dark" : "light";
   }, [settings.darkMode]);
+  /* ── Organization routing ────────────────────────────────────────────
+     Two ways in, both explicit, neither in the main navigation:
+
+       ?org        the registration form, linked from the footer
+       role        a signed-in organization always lands on its dashboard
+
+     A volunteer session matches neither branch, so `safePage` and everything
+     below it behave exactly as they did before Stage 1. */
+  const authUser = useAuth();
+  const isOrgAccount = !!authUser && authUser.role === "organization";
+  const [orgRoute, setOrgRoute] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).has("org");
+    } catch (e) {
+      return false;
+    }
+  });
+  // Once an organization account signs in, drop the ?org marker so a refresh
+  // lands on the dashboard rather than back on the empty registration form.
+  useEffect(() => {
+    if (!isOrgAccount || !orgRoute) return;
+    setOrgRoute(false);
+    try {
+      history.replaceState(null, "", window.location.pathname);
+    } catch (e) {}
+  }, [isOrgAccount, orgRoute]);
+
+  if (isOrgAccount) {
+    return /*#__PURE__*/React.createElement("div", {
+      "data-theme": settings.darkMode ? "dark" : "light",
+      "data-contrast": settings.highContrast ? "high" : "normal",
+      "data-size": settings.fontSize,
+      style: {
+        minHeight: "100vh",
+        background: "var(--canvas)"
+      }
+    }, /*#__PURE__*/React.createElement(Styles, null), /*#__PURE__*/React.createElement(OrgDashboard, null));
+  }
+  if (orgRoute) {
+    return /*#__PURE__*/React.createElement("div", {
+      "data-theme": settings.darkMode ? "dark" : "light",
+      "data-contrast": settings.highContrast ? "high" : "normal",
+      "data-size": settings.fontSize,
+      style: {
+        minHeight: "100vh",
+        background: "var(--canvas)"
+      }
+    }, /*#__PURE__*/React.createElement(Styles, null), /*#__PURE__*/React.createElement(OrgSignupPage, {
+      go: () => {
+        setOrgRoute(false);
+        try {
+          history.replaceState(null, "", window.location.pathname);
+        } catch (e) {}
+      }
+    }));
+  }
+
   const safePage = page === "favorites" ? favs.length ? "favorites" : "home" : ["home", "match", "hours", "settings", "about", "profile"].includes(page) ? page : "home";
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     "data-theme": settings.darkMode ? "dark" : "light",
