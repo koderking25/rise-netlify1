@@ -707,6 +707,64 @@ if (typeof window !== "undefined" && !window.riseCloud) {
         return { orgs, opps };
       },
 
+      /* ── Admin actions (Stage 3) ───────────────────────────────────────
+         Everything here goes through the Worker, which holds the only
+         service_role key in the system. The browser cannot verify or publish
+         directly — those columns are revoked from `authenticated`, and an
+         admin is still `authenticated`. The Worker re-verifies the token with
+         Supabase and re-fetches the role on every single request, so this
+         method being callable proves nothing on its own. */
+      async adminAction(action, payload) {
+        const r = await fetch("/api/admin", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(session ? { Authorization: "Bearer " + session.access_token } : {})
+          },
+          body: JSON.stringify({ action, ...(payload || {}) })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || "That action didn't complete.");
+        return d;
+      },
+
+      /* The organization's own screening attestation — point (d) of the bar.
+         Legitimately written by the organization because it is their
+         statement to make. It is evidence for the review, not a grant: the
+         verification columns stay revoked either way. */
+      async attestScreening(statement) {
+        if (!session || !user) throw new Error("Sign in first.");
+        const org = await this.myOrganization();
+        if (!org) throw new Error("No organization on this account.");
+        const r = await fetch(`${SUPA_URL}/rest/v1/organizations?id=eq.${org.id}`, {
+          method: "PATCH",
+          headers: H(session.access_token),
+          body: JSON.stringify({
+            screening_attested: true,
+            screening_statement: (statement || "").slice(0, 2000)
+          })
+        });
+        if (!r.ok) throw new Error("Couldn't record your attestation.");
+      },
+
+      /* Published postings from verified organizations, for the volunteer
+         results. Reads the view, never the base table — the "published AND
+         verified" condition is part of the view's definition, so this cannot
+         return anything unpublished even if this code were wrong. */
+      async publishedOpportunities(opts = {}) {
+        const params = ["select=*", "order=published_at.desc", "limit=" + (opts.limit || 20)];
+        if (opts.city) params.push(`or=(location_city.ilike.*${encodeURIComponent(opts.city)}*,is_remote.is.true)`);
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/public_opportunities?${params.join("&")}`, {
+            headers: H(session ? session.access_token : null)
+          });
+          if (!r.ok) return [];
+          return await r.json();
+        } catch (e) {
+          return [];
+        }
+      },
+
       async myOrganization() {
         if (!session || !user) return null;
         try {
@@ -6045,6 +6103,24 @@ function ResultCardBase({
     className: "badge badge-neutral",
     title: "A real organization from our built-in list — not tailored to your answers"
   }, "Starting point"),
+  /* The badge means a person at RISE checked this organization: confirmed it
+     is a real registered entity, that it plausibly works with youth, and that
+     it attested in writing to screening anyone who contacts minors. It is the
+     strongest claim on the card, so it says what it means on hover. */
+  opp._riseVerified &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge",
+    style: {
+      background: "var(--success-bg)",
+      color: "var(--success)",
+      border: "1px solid rgba(26,107,60,.28)",
+      fontWeight: 700
+    },
+    title: "A person at RISE checked this organization: a real registered entity, working with youth, that has attested to screening anyone who contacts minors."
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 9
+  }), "\xA0RISE Verified"),
   // Says plainly why a role sits at the bottom, instead of leaving the student
   // to wonder why a strong-looking match was ranked last.
   opp._blocked &&
@@ -8394,6 +8470,41 @@ function MatcherPage({
       collected.push(...addBatch(libCandidates));
       reveal();
     }, 250);
+
+    /* RISE Verified postings — Stage 3.
+       Read from the `public_opportunities` view, whose definition already
+       requires published AND a verified organization, so nothing unpublished
+       can arrive here even if this call were wrong. Added ahead of the search
+       engines because these are the highest-confidence results on the page:
+       a person checked the organization behind each one. */
+    (async () => {
+      const rows = await window.riseCloud.publishedOpportunities({
+        city: loc?.short || "",
+        limit: 12
+      });
+      if (searchRun.current !== run || !rows.length) return;
+      const mapped = rows.map(r => ({
+        title: r.title,
+        org: r.org_name,
+        role: r.role_summary || r.description,
+        desc: r.description || r.role_summary,
+        commitment: r.time_commitment,
+        hours: r.time_commitment,
+        requirements: r.requirements,
+        where: r.is_remote ? "Remote" : [r.location_city, r.location_province].filter(Boolean).join(", "),
+        link: r.org_website || "",
+        remote: !!r.is_remote,
+        tags: ["rise-verified"],
+        _riseVerified: true,
+        _origin: "rise",
+        // Starts above the library floor: a human vouched for the
+        // organization, which no library entry can claim.
+        _score: 82,
+        _det: 82
+      }));
+      collected.push(...addBatch(mapped));
+      reveal();
+    })();
 
     // STAGE 1 - DISCOVER: four engines with different strategies. Each reports
     // its own state so the waiting screen shows what is actually happening.
@@ -12581,6 +12692,135 @@ function OpportunityEditor({
   }, "Cancel")));
 }
 
+/* ── Screening attestation ───────────────────────────────────────────────
+   Point (d) of the bar, and the one item on it the organization supplies
+   themselves. Deliberately a written statement they actively make rather than
+   a checkbox buried in signup: it is the sentence you would hold up if
+   someone later asked what the organization told you. */
+function OrgAttestation({
+  org,
+  onDone
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  if (org.screening_attested) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "card",
+      style: {
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 9,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement(CheckCircle, {
+      size: 15,
+      color: "var(--success)"
+    }), /*#__PURE__*/React.createElement("h2", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: "var(--ink)"
+      }
+    }, "Screening attested")), org.screening_statement && /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 12.5,
+        color: "var(--ink-3)",
+        lineHeight: 1.7,
+        marginTop: 8,
+        fontStyle: "italic"
+      }
+    }, "“", org.screening_statement, "”"));
+  }
+
+  const submit = async () => {
+    if (!text.trim()) return;
+    setErr("");
+    setBusy(true);
+    try {
+      await window.riseCloud.attestScreening(text);
+      onDone();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy(false);
+  };
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 16,
+      borderColor: "var(--ember-bd)"
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 6
+    }
+  }, "Required: screening attestation"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      marginBottom: 10
+    }
+  }, "RISE students are 14 to 18. Before your organization can be verified, confirm in writing that anyone who would be in contact with a minor through your programme is screened according to the requirements that apply where you operate."), !open && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => setOpen(true)
+  }, "Make attestation"), open && /*#__PURE__*/React.createElement(React.Fragment, null, err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "9px 12px",
+      background: "var(--danger-bg)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 10
+    }
+  }, err), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 4,
+    value: text,
+    onChange: e => setText(e.target.value),
+    placeholder: "e.g. All volunteers and staff who work with youth complete a Vulnerable Sector Check before any contact, renewed every three years.",
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit",
+      marginBottom: 10
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    disabled: !text.trim() || busy,
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: submit
+  }, busy ? "Recording…" : "I attest to this"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => setOpen(false)
+  }, "Cancel"))));
+}
+
 /* ── Posting list ────────────────────────────────────────────────────── */
 function OrgOpportunities({
   org
@@ -12889,7 +13129,10 @@ function OrgDashboard() {
       textAlign: "right"
     }
   }, v)))),
-  /*#__PURE__*/React.createElement(OrgOpportunities, {
+  /*#__PURE__*/React.createElement(OrgAttestation, {
+    org: org,
+    onDone: () => window.location.reload()
+  }), /*#__PURE__*/React.createElement(OrgOpportunities, {
     org: org
   })), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost",
@@ -12900,7 +13143,262 @@ function OrgDashboard() {
   }, "Sign out"));
 }
 
-/* ── Admin review queue (Stage 2: read-only) ─────────────────────────────
+/* ── Review panel (Stage 3) ──────────────────────────────────────────────
+   Renders the bar fetched from the Worker, which owns the single definition.
+   Tightening the bar is one edit in VERIFICATION_BAR: the checklist, the
+   server-side enforcement and the audit record all move together, and this
+   component needs no change at all.
+
+   The tick boxes are not what approves anything. The Worker re-checks every
+   item independently, and the database refuses 'verified' without a named
+   human regardless of what this screen sends. */
+function ReviewPanel({
+  org,
+  bar,
+  onDone,
+  onClose
+}) {
+  const [confirmations, setConfirmations] = useState({});
+  const [notes, setNotes] = useState(org.review_notes || "");
+  const [checks, setChecks] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+
+  const runChecks = async () => {
+    setErr("");
+    setBusy("checks");
+    try {
+      const d = await window.riseCloud.adminAction("run-checks", { orgId: org.id });
+      setChecks(d.checks || []);
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy("");
+  };
+
+  const decide = async decision => {
+    setErr("");
+    setBusy(decision);
+    try {
+      await window.riseCloud.adminAction("verify-org", {
+        orgId: org.id,
+        decision,
+        notes,
+        confirmations
+      });
+      onDone();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy("");
+  };
+
+  const humanItems = (bar || []).filter(b => b.kind === "human");
+  const allTicked = humanItems.every(b => confirmations[b.id]);
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginTop: 16,
+      borderColor: "var(--fire)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      color: "var(--ink)"
+    }
+  }, "Review ", org.name), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close review",
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      color: "var(--ink-3)"
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 16
+  }))), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14,
+      lineHeight: 1.6
+    }
+  }, err), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      marginBottom: 14,
+      fontSize: 12.5,
+      padding: "7px 13px"
+    },
+    disabled: busy === "checks",
+    onClick: runChecks
+  }, busy === "checks" ? "Running…" : "Run automated checks"), checks && checks.map(c => /*#__PURE__*/React.createElement("div", {
+    key: c.check_key,
+    style: {
+      display: "flex",
+      gap: 9,
+      alignItems: "flex-start",
+      padding: "8px 0",
+      fontSize: 12.5,
+      lineHeight: 1.6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: c.passed ? "var(--success)" : "var(--danger)",
+      fontWeight: 700
+    }
+  }, c.passed ? "✓" : "✕"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink-2)"
+    }
+  }, /*#__PURE__*/React.createElement("strong", null, c.check_key.replace(/_/g, " ")), " — ", c.detail))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      paddingTop: 14,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".1em",
+      textTransform: "uppercase",
+      color: "var(--ink-4)",
+      marginBottom: 10
+    }
+  }, "The bar"), (bar || []).map(item => {
+    const auto = item.kind === "automated";
+    const attest = item.kind === "attestation";
+    const approval = item.kind === "approval";
+    const satisfied = auto ? checks && checks.every(c => c.passed) : attest ? org.screening_attested : approval ? false : !!confirmations[item.id];
+    const interactive = item.kind === "human";
+    return /*#__PURE__*/React.createElement("label", {
+      key: item.id,
+      style: {
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        padding: "9px 0",
+        cursor: interactive ? "pointer" : "default",
+        opacity: interactive ? 1 : .85
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: !!satisfied,
+      disabled: !interactive,
+      onChange: e => interactive && setConfirmations(p => ({
+        ...p,
+        [item.id]: e.target.checked
+      })),
+      style: {
+        width: 17,
+        height: 17,
+        marginTop: 1,
+        accentColor: "var(--fire)"
+      }
+    }), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+      style: {
+        display: "block",
+        fontSize: 13.5,
+        fontWeight: 600,
+        color: "var(--ink)"
+      }
+    }, item.label, !interactive && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 500,
+        color: "var(--ink-4)",
+        fontSize: 11.5
+      }
+    }, approval ? "  · recorded when you approve" : auto ? "  · from the checks above" : "  · from the organization")), /*#__PURE__*/React.createElement("span", {
+      style: {
+        display: "block",
+        fontSize: 12,
+        color: "var(--ink-3)",
+        lineHeight: 1.6,
+        marginTop: 2
+      }
+    }, item.detail)));
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Review notes"), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 3,
+    value: notes,
+    onChange: e => setNotes(e.target.value),
+    placeholder: "What you checked, and how.",
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9,
+      marginTop: 14,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    disabled: !!busy || !allTicked,
+    style: {
+      opacity: allTicked ? 1 : .5,
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => decide("verified")
+  }, busy === "verified" ? "Verifying…" : "Approve as RISE Verified"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    disabled: !!busy,
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => decide("in_review")
+  }, "Mark in review"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    disabled: !!busy,
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px",
+      color: "var(--danger)"
+    },
+    onClick: () => decide("suspended")
+  }, "Suspend")), !allTicked && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      marginTop: 9,
+      lineHeight: 1.6
+    }
+  }, "Approval needs every human confirmation ticked. The server checks the whole bar again regardless of what this screen sends."));
+}
+
+/* ── Admin review queue ──────────────────────────────────────────────────
    Deliberately has no approve button.
 
    An admin signs in as a normal user, so they are `authenticated`, and the
@@ -12916,17 +13414,42 @@ function OrgDashboard() {
 function AdminQueue() {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("orgs");
+  const [bar, setBar] = useState([]);
+  const [reviewing, setReviewing] = useState(null);
+  const [busyId, setBusyId] = useState("");
+  const [err, setErr] = useState("");
+
+  const reload = useCallback(async () => {
+    const d = await window.riseCloud.adminQueue();
+    setData(d || { orgs: [], opps: [] });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const d = await window.riseCloud.adminQueue();
-      if (!cancelled) setData(d || { orgs: [], opps: [] });
+      await reload();
+      // The bar comes from the Worker so there is exactly one definition.
+      try {
+        const d = await window.riseCloud.adminAction("get-bar");
+        if (!cancelled) setBar(d.bar || []);
+      } catch (e) {}
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
+
+  const publishAct = async (action, id) => {
+    setErr("");
+    setBusyId(id);
+    try {
+      await window.riseCloud.adminAction(action, { opportunityId: id });
+      await reload();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusyId("");
+  };
 
   const orgs = (data && data.orgs) || [];
   const opps = (data && data.opps) || [];
@@ -12983,7 +13506,25 @@ function AdminQueue() {
       color: "var(--ink-2)",
       lineHeight: 1.6
     }
-  }, "Read-only. Verifying an organization and publishing a posting need the service-role key and arrive in Stage 3 — nothing in the browser can grant \"RISE Verified\".")), /*#__PURE__*/React.createElement("div", {
+  }, "Every action here runs through the server, which re-verifies your session with Supabase and re-checks your role on each request. The database refuses \"verified\" without a named human, and every decision is written to an append-only log.")), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14
+    }
+  }, err), reviewing && /*#__PURE__*/React.createElement(ReviewPanel, {
+    org: reviewing,
+    bar: bar,
+    onClose: () => setReviewing(null),
+    onDone: async () => {
+      setReviewing(null);
+      await reload();
+    }
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -13051,7 +13592,15 @@ function AdminQueue() {
     style: {
       color: "var(--ink-2)"
     }
-  }, v)))))), data && tab === "opps" && /*#__PURE__*/React.createElement("div", {
+  }, v))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      marginTop: 10,
+      fontSize: 12,
+      padding: "6px 12px"
+    },
+    onClick: () => setReviewing(o)
+  }, o.verification_status === "verified" ? "Re-review" : "Review")))), data && tab === "opps" && /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       marginTop: 16
@@ -13086,7 +13635,16 @@ function AdminQueue() {
       color: "var(--ink-2)",
       lineHeight: 1.65
     }
-  }, o.role_summary)))));
+  }, o.role_summary), (o.status === "submitted" || o.status === "published") && /*#__PURE__*/React.createElement("button", {
+    className: o.status === "published" ? "btn btn-ghost" : "btn btn-fire",
+    disabled: busyId === o.id,
+    style: {
+      marginTop: 9,
+      fontSize: 12,
+      padding: "6px 12px"
+    },
+    onClick: () => publishAct(o.status === "published" ? "unpublish-opportunity" : "publish-opportunity", o.id)
+  }, busyId === o.id ? "Working…" : o.status === "published" ? "Unpublish" : "Publish")))));
 }
 
 /* ═══════════════════════════════════════
