@@ -34,20 +34,36 @@
 <meta name="description" content="RISE matches Canadian students aged 14-18 with volunteer opportunities that fit their talents. Track your 40 hours. Turn talent into impact."/>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>
+  /* Applies the saved theme before the first paint.
+
+     RISE opens light and ignores the device's colour scheme: someone who
+     never asked for a dark site should not be given one. But a person who
+     did turn dark mode on should not get a bright flash on every visit while
+     React boots, so their choice is read here, synchronously, ahead of any
+     rendering. Nothing else runs this early, which is the whole point.
+
+     Reads the same `rise_cfg` record the Settings toggle writes, so there is
+     one stored preference rather than a second copy to drift. */
+  (function () {
+    try {
+      var cfg = JSON.parse(localStorage.getItem("rise_cfg") || "{}");
+      if (cfg && cfg.darkMode === true) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.style.colorScheme = "dark";
+      }
+    } catch (e) {}
+  })();
+</script>
 <style>
-  /* The boot splash paints before React exists, so it cannot read the app's
-     theme and was hardcoded cream — a full-screen white flash on any device
-     set to dark. Match the palette up front instead. The app takes over the
-     moment it mounts; this only governs the first few hundred milliseconds.
-     `color-scheme` here also stops the browser painting a white canvas behind
-     the page before any CSS applies. */
-  :root { color-scheme: light dark; }
+  /* The boot splash paints before React exists. It follows the saved choice
+     applied by the script above, and defaults to light — deliberately not to
+     `prefers-color-scheme`, which is what used to hand people a dark site
+     they had not asked for. */
   html, body { background: #F4F1EB; }
-  @media (prefers-color-scheme: dark) {
-    html, body { background: #0C0906; }
-    #rise-splash { background: #0C0906 !important; color: #F5EDE3 !important; }
-    #rise-splash div[style*="8a7a6a"] { color: #B8A08A !important; }
-  }
+  html[data-theme="dark"], html[data-theme="dark"] body { background: #0C0906; }
+  html[data-theme="dark"] #rise-splash { background: #0C0906 !important; color: #F5EDE3 !important; }
+  html[data-theme="dark"] #rise-splash div[style*="8a7a6a"] { color: #B8A08A !important; }
 </style>
 </head>
 <body>
@@ -14852,19 +14868,12 @@ function App() {
       }];
     });
   }, [setFavs]);
-  /* Dark mode follows the device on a first visit. The full dark palette was
-     already defined but could only ever be reached by finding the toggle in
-     Settings, so a phone set to dark at night still opened RISE bright cream.
-     This is the initial value only — once the toggle is used, useStorage has a
-     saved preference and that always wins. */
+  /* RISE opens light, always. It used to follow the device's colour scheme on
+     a first visit, which meant people who had never asked for a dark site got
+     one and were surprised by it. Dark mode is a choice made in Settings, and
+     once it is made useStorage keeps it for every visit after. */
   const [settings, setSettings] = useStorage("rise_cfg", {
-    darkMode: (() => {
-      try {
-        return window.matchMedia("(prefers-color-scheme: dark)").matches;
-      } catch (e) {
-        return false;
-      }
-    })(),
+    darkMode: false,
     fontSize: "md",
     easyReading: false,
     underlineLinks: false,
