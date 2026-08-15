@@ -1242,6 +1242,9 @@ React.createElement("style", null, `
       .founders-grid { grid-template-columns: 1fr !important; }
       .about-2col { grid-template-columns: 1fr !important; }
       .about-head { grid-template-columns: 1fr !important; gap: 12px !important; align-items: start !important; }
+      /* The seal is decorative, and .hide-sm already removes it on a phone,
+         so the text takes the full width rather than sitting in a stub column. */
+      .org-invite { grid-template-columns: 1fr !important; padding: 28px 22px !important; }
     }
 
     /* Nav: on narrow screens let the links scroll horizontally instead of
@@ -8053,7 +8056,186 @@ function HomePage({
       color: "color-mix(in srgb, #fff 50%, transparent)",
       marginTop: 10
     }
-  }, "Takes 2 minutes"))));
+  }, "Takes 2 minutes"))),
+  /* ── For organizations ──────────────────────────────────────────────
+     Sits below the Ambassador block, near the bottom of the page, which is
+     the right trade: an organization scrolling this far is looking for
+     something, while a student has already found what they came for and is
+     not made to scroll past a pitch aimed at adults. Still out of the main
+     navigation for the same reason.
+
+     The copy answers the two questions an organization actually has before
+     they will spend ten minutes registering: what does the badge mean, and
+     why should I want it. */
+  /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "0 24px 96px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card org-invite",
+    style: {
+      padding: "38px 34px",
+      display: "grid",
+      gridTemplateColumns: "auto 1fr",
+      gap: 30,
+      alignItems: "start",
+      background: "var(--surface-warm)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "hide-sm",
+    style: {
+      paddingTop: 4
+    }
+  }, /*#__PURE__*/React.createElement(VerifiedSeal, {
+    size: 76
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".12em",
+      marginBottom: 10
+    }
+  }, "For organizations"), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 30,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.6px",
+      lineHeight: 1.15,
+      marginBottom: 12
+    }
+  }, "Are you an organization?"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.85,
+      marginBottom: 22,
+      maxWidth: 620
+    }
+  }, "If you run a programme that needs volunteers, you can post your roles on RISE. Students here have already told us what they can do and who they want to work with, so the people who find your posting picked your kind of work on purpose."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "18px 20px",
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 12,
+      marginBottom: 22,
+      maxWidth: 620
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 8
+    }
+  }, "What RISE Verified means"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.8,
+      marginBottom: 10
+    }
+  }, "Our students are 14 to 18, so nobody gets listed just for filling in a form. A person at RISE checks that you are a real registered organization, that the work suits students that age, and you tell us in writing that anyone who would be in contact with a student is screened the way the rules where you operate require."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.8
+    }
+  }, "Then your postings carry the badge. Students see it, and so do their parents and teachers. It is usually the reason someone trusts a listing enough to send that first email.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 22,
+      marginBottom: 24
+    }
+  }, [["Free", "No listing fees, ever"], ["60+ cities", "Students across Canada"], ["10 minutes", "To register and submit"]].map(([big, small]) => /*#__PURE__*/React.createElement("div", {
+    key: big
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      color: "var(--fire)",
+      lineHeight: 1.1
+    }
+  }, big), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 2
+    }
+  }, small)))), /*#__PURE__*/React.createElement("a", {
+    href: "/organizations",
+    className: "btn btn-fire",
+    style: {
+      textDecoration: "none",
+      display: "inline-flex"
+    }
+  }, "Register your organization ", /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 14
+  })), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 12,
+      lineHeight: 1.7
+    }
+  }, "Nothing you post reaches a student until a person has reviewed your organization. You can write your postings while you wait.")))));
+}
+
+/* The RISE Verified seal. Drawn rather than imported so it inherits the theme
+   tokens and stays crisp at any size. Used on the home page, and available for
+   the org dashboard and result cards later. */
+function VerifiedSeal({
+  size = 72
+}) {
+  return /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    viewBox: "0 0 72 72",
+    fill: "none",
+    role: "img",
+    "aria-label": "RISE Verified"
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+    id: "vsg",
+    x1: "0",
+    y1: "0",
+    x2: "1",
+    y2: "1"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0",
+    stopColor: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "1",
+    stopColor: "var(--fire-light)"
+  }))),
+  /* Notched outer ring, so it reads as a seal rather than a generic badge. */
+  /*#__PURE__*/React.createElement("circle", {
+    cx: "36",
+    cy: "36",
+    r: "34",
+    stroke: "url(#vsg)",
+    strokeWidth: "2",
+    strokeDasharray: "3 3",
+    opacity: ".55"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "36",
+    cy: "36",
+    r: "28",
+    fill: "url(#vsg)"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M36 21c3.6 2.6 7.9 4.1 12 4.3v10.4c0 7.6-5 13.2-12 15.9-7-2.7-12-8.3-12-15.9V25.3c4.1-.2 8.4-1.7 12-4.3z",
+    fill: "#fff",
+    opacity: ".2"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "m30.5 36.5 4 4 8-8.5",
+    stroke: "#fff",
+    strokeWidth: "3.2",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }));
 }
 
 /* ═══════════════════════════════════════
@@ -14695,6 +14877,13 @@ function App() {
   const isAdminAccount = !!authUser && authUser.role === "admin";
   const [orgRoute, setOrgRoute] = useState(() => {
     try {
+      /* Two ways in. `?org` is kept because links to it already exist, but
+         /organizations is the one to hand out: it survives being retyped from
+         a business card, read down a phone, or pasted into an email, which is
+         how an organization actually arrives here. The asset config already
+         serves the app for unknown paths, so no server change was needed. */
+      const path = (window.location.pathname || "").replace(/\/+$/, "").toLowerCase();
+      if (path === "/organizations" || path === "/orgs") return true;
       return new URLSearchParams(window.location.search).has("org");
     } catch (e) {
       return false;
