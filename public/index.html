@@ -1242,9 +1242,13 @@ React.createElement("style", null, `
       .founders-grid { grid-template-columns: 1fr !important; }
       .about-2col { grid-template-columns: 1fr !important; }
       .about-head { grid-template-columns: 1fr !important; gap: 12px !important; align-items: start !important; }
-      /* The seal is decorative, and .hide-sm already removes it on a phone,
-         so the text takes the full width rather than sitting in a stub column. */
-      .org-invite { grid-template-columns: 1fr !important; padding: 28px 22px !important; }
+      /* Phones: the seal stays, because it is the thing being explained. It
+         shrinks and the heading block wraps under it rather than being
+         squeezed into a narrow column beside it. */
+      .org-invite { padding: 28px 22px !important; }
+      .org-invite-head { flex-direction: column; align-items: flex-start !important; gap: 14px !important; }
+      .org-seal svg { width: 58px; height: 58px; }
+      .org-stats { grid-template-columns: 1fr !important; }
     }
 
     /* Nav: on narrow screens let the links scroll horizontally instead of
@@ -8074,20 +8078,27 @@ function HomePage({
   }, /*#__PURE__*/React.createElement("div", {
     className: "card org-invite",
     style: {
-      padding: "38px 34px",
-      display: "grid",
-      gridTemplateColumns: "auto 1fr",
-      gap: 30,
-      alignItems: "start",
-      background: "var(--surface-warm)"
+      padding: "40px 36px"
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "hide-sm",
+    className: "org-invite-head",
     style: {
-      paddingTop: 4
+      display: "flex",
+      alignItems: "center",
+      gap: 20,
+      marginBottom: 18
+    }
+  },
+  /* The seal is part of the message, not decoration, so it stays on every
+     screen size. It sits beside the heading rather than in its own column,
+     which is what lets it survive the single-column mobile layout. */
+  /*#__PURE__*/React.createElement("div", {
+    className: "org-seal",
+    style: {
+      flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement(VerifiedSeal, {
-    size: 76
+    size: 72
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
@@ -8095,78 +8106,95 @@ function HomePage({
       color: "var(--fire)",
       textTransform: "uppercase",
       letterSpacing: ".12em",
-      marginBottom: 10
+      marginBottom: 8
     }
   }, "For organizations"), /*#__PURE__*/React.createElement("h2", {
     className: "serif",
     style: {
-      fontSize: 30,
+      fontSize: 31,
       fontWeight: 400,
       color: "var(--ink)",
       letterSpacing: "-.6px",
-      lineHeight: 1.15,
-      marginBottom: 12
+      lineHeight: 1.12
     }
-  }, "Are you an organization?"), /*#__PURE__*/React.createElement("p", {
+  }, "Are you an organization?"))), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 14.5,
       color: "var(--ink-2)",
       lineHeight: 1.85,
-      marginBottom: 22,
-      maxWidth: 620
+      marginBottom: 24,
+      maxWidth: 660
     }
-  }, "If you run a programme that needs volunteers, you can post your roles on RISE. Students here have already told us what they can do and who they want to work with, so the people who find your posting picked your kind of work on purpose."), /*#__PURE__*/React.createElement("div", {
+  }, "RISE matches students aged 14 to 18 to volunteer roles based on the specific skills they have told us they have. Post your roles here and they reach students who chose that kind of work deliberately, rather than a general audience who found a listing board."),
+  /* Uses the site's own .card-tinted rather than a hand-rolled ember box, so
+     it inherits the same treatment as every other highlighted block. */
+  /*#__PURE__*/React.createElement("div", {
+    className: "card-tinted",
     style: {
-      padding: "18px 20px",
-      background: "var(--ember)",
-      border: "1px solid var(--ember-bd)",
-      borderRadius: 12,
-      marginBottom: 22,
-      maxWidth: 620
+      padding: "22px 24px",
+      marginBottom: 24,
+      maxWidth: 660
     }
   }, /*#__PURE__*/React.createElement("h3", {
     style: {
-      fontSize: 14,
+      fontSize: 14.5,
       fontWeight: 700,
       color: "var(--ink)",
-      marginBottom: 8
+      marginBottom: 10
     }
   }, "What RISE Verified means"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 13.5,
       color: "var(--ink-2)",
-      lineHeight: 1.8,
-      marginBottom: 10
+      lineHeight: 1.85,
+      marginBottom: 12
     }
-  }, "Our students are 14 to 18, so nobody gets listed just for filling in a form. A person at RISE checks that you are a real registered organization, that the work suits students that age, and you tell us in writing that anyone who would be in contact with a student is screened the way the rules where you operate require."), /*#__PURE__*/React.createElement("p", {
+  }, "Our students are minors, so every organization is reviewed by a person before any of its postings become visible. We confirm you are a registered entity, that the work is suitable for students aged 14 to 18, and we ask you to state in writing that anyone who would be in contact with a student is screened according to the requirements in your region."), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 13.5,
       color: "var(--ink-2)",
-      lineHeight: 1.8
+      lineHeight: 1.85
     }
-  }, "Then your postings carry the badge. Students see it, and so do their parents and teachers. It is usually the reason someone trusts a listing enough to send that first email.")), /*#__PURE__*/React.createElement("div", {
+  }, "Verified organizations carry the badge on every posting. Students see it, and so do the parents and teachers looking over their shoulder. In practice it is what gives someone the confidence to make first contact.")), /*#__PURE__*/React.createElement("div", {
+    className: "org-stats",
     style: {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: 22,
-      marginBottom: 24
+      display: "grid",
+      gridTemplateColumns: "repeat(3, 1fr)",
+      gap: 12,
+      marginBottom: 26,
+      maxWidth: 660
     }
-  }, [["Free", "No listing fees, ever"], ["60+ cities", "Students across Canada"], ["10 minutes", "To register and submit"]].map(([big, small]) => /*#__PURE__*/React.createElement("div", {
-    key: big
-  }, /*#__PURE__*/React.createElement("div", {
+  }, [["Free", "No listing fees", "We do not charge organizations"], ["60+", "Cities across Canada", "From Vancouver to Halifax"], ["10 min", "To register", "Review takes a little longer"]].map(([n, l, s]) => /*#__PURE__*/React.createElement("div", {
+    key: l,
+    className: "card",
+    style: {
+      padding: "16px 18px",
+      background: "var(--surface-warm)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
     className: "serif",
     style: {
-      fontSize: 22,
+      fontSize: 28,
+      lineHeight: 1,
       color: "var(--fire)",
-      lineHeight: 1.1
+      letterSpacing: "-1px",
+      display: "block",
+      marginBottom: 7
     }
-  }, big), /*#__PURE__*/React.createElement("div", {
+  }, n), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 12,
-      color: "var(--ink-3)",
-      marginTop: 2
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 2
     }
-  }, small)))), /*#__PURE__*/React.createElement("a", {
+  }, l), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      lineHeight: 1.5
+    }
+  }, s)))), /*#__PURE__*/React.createElement("a", {
     href: "/organizations",
     className: "btn btn-fire",
     style: {
@@ -8179,10 +8207,11 @@ function HomePage({
     style: {
       fontSize: 12,
       color: "var(--ink-3)",
-      marginTop: 12,
-      lineHeight: 1.7
+      marginTop: 13,
+      lineHeight: 1.75,
+      maxWidth: 560
     }
-  }, "Nothing you post reaches a student until a person has reviewed your organization. You can write your postings while you wait.")))));
+  }, "Nothing you post reaches a student until your organization has been reviewed. You can write your postings while you wait."))));
 }
 
 /* The RISE Verified seal. Drawn rather than imported so it inherits the theme
@@ -12252,9 +12281,14 @@ function Footer({
       color: "var(--ink-2)"
     }
   }, "RISE · Turn Talent into Impact")), /*#__PURE__*/React.createElement("div", {
+    /* Wraps. This row grew a sixth item when "For organizations" was added,
+       which pushed it past the width of a 375px phone and gave the whole page
+       a horizontal scroll. */
     style: {
       display: "flex",
-      gap: 20
+      flexWrap: "wrap",
+      rowGap: 10,
+      columnGap: 20
     }
   }, [["home", "Home"], ["match", "Find Matches"], ["hours", "Log Hours"], ...(favCount > 0 ? [["favorites", "Favorites"]] : []), ["about", "About"], ["settings", "Settings"]].map(([id, lbl]) =>
   /*#__PURE__*/
