@@ -763,6 +763,48 @@ if (typeof window !== "undefined" && !window.riseCloud) {
         if (!r.ok) throw new Error("Couldn't record your attestation.");
       },
 
+      /* ── Applications (Stage 4) ────────────────────────────────────────
+         Submitting goes through submit_application(), which is the only path
+         that creates a row. The function re-checks that the opportunity is in
+         public_opportunities, so applying to an unpublished posting or an
+         unverified organization fails in the database rather than relying on
+         this client having rendered the right button.
+
+         Nothing here writes `status`. That column is revoked from
+         `authenticated`, so including it would fail the request outright. */
+      async submitApplication(fields) {
+        if (!session || !user) throw new Error("Sign in to apply.");
+        return rpc("submit_application", {
+          p_opportunity_id: fields.opportunityId,
+          p_availability: fields.availability,
+          p_experience: fields.experience || null,
+          p_motivation: fields.motivation || null,
+          p_prior: fields.prior || null,
+          p_accessibility: !!fields.accessibility,
+          p_skills: fields.skills && fields.skills.length ? fields.skills : null
+        });
+      },
+
+      async withdrawApplication(id) {
+        return rpc("withdraw_application", { p_id: id });
+      },
+
+      /* A volunteer's own applications. RLS restricts this to their rows —
+         there is no policy on this table that grants anyone else a read, so a
+         hand-written query cannot reach another student's application. */
+      async myApplications() {
+        if (!session || !user) return [];
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/applications?volunteer_id=eq.${user.uid}&select=*&order=created_at.desc`, {
+            headers: H(session.access_token)
+          });
+          if (!r.ok) return [];
+          return await r.json();
+        } catch (e) {
+          return [];
+        }
+      },
+
       /* Published postings from verified organizations, for the volunteer
          results. Reads the view, never the base table — the "published AND
          verified" condition is part of the view's definition, so this cannot
@@ -6023,6 +6065,7 @@ function ResultCardBase({
   const [copied, setCopied] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
   const [showDraft, setShowDraft] = useState(false);
+  const [showApply, setShowApply] = useState(false);
   const verdict = verdictOf(opp);
   async function share() {
     const msg = `Found this volunteer spot: ${opp.title} at ${opp.org}. Come with me? ${opp.link}`;
@@ -6547,7 +6590,22 @@ function ResultCardBase({
     }
   }, /*#__PURE__*/React.createElement(Sparkles, {
     size: 12
-  }), " Draft my email"), /*#__PURE__*/React.createElement("div", {
+  }), " Draft my email"),
+  /* Applying inside RISE exists only for RISE Verified postings, because it
+     is the only case where a person has checked who is on the other end.
+     Everything else still routes to the organization's own page, where the
+     student is dealing with them directly and RISE is not implying it
+     vouched for anyone. */
+  opp._riseVerified && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowApply(true),
+    className: "btn btn-fire",
+    style: {
+      padding: "9px 14px",
+      fontSize: 12.5
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 12
+  }), " Apply through RISE"), /*#__PURE__*/React.createElement("div", {
     style: {
       marginLeft: "auto",
       display: "flex",
@@ -6601,6 +6659,13 @@ function ResultCardBase({
       skills: studentSkills
     },
     onClose: () => setShowDraft(false)
+  }), showApply && /*#__PURE__*/React.createElement(ApplyModal, {
+    opp: opp,
+    profile: student || {
+      name: studentName,
+      skills: studentSkills
+    },
+    onClose: () => setShowApply(false)
   }));
 }
 /* Default shallow comparison is right here: every prop is a primitive, or an
@@ -10817,7 +10882,7 @@ function HoursPage() {
       width: "fit-content",
       flexWrap: "wrap"
     }
-  }, [["dashboard", "Dashboard"], ["ledger", "Hour Log"], ["badges", `Badges (${badges.unlocked})`]].map(([id, label]) =>
+  }, [["dashboard", "Dashboard"], ["ledger", "Hour Log"], ["applications", "Applications"], ["badges", `Badges (${badges.unlocked})`]].map(([id, label]) =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -10838,7 +10903,7 @@ function HoursPage() {
       color: tab === id ? "#fff" : "var(--ink-2)",
       transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
     }
-  }, label))), tab === "dashboard" &&
+  }, label))), tab === "applications" && /*#__PURE__*/React.createElement(MyApplications, null), tab === "dashboard" &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -12346,6 +12411,445 @@ function Footer({
       color: "var(--ink-4)"
     }
   }, "Neil & Rayan Mekouar · Canada 2026")));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   APPLYING — Stage 4, Level 1
+
+   One shared application form for every RISE Verified opportunity.
+
+   What it collects is deliberately narrow: availability, what they have done
+   before, why this one, and a yes/no on whether they need an adjustment.
+   What it does not collect is the point — no surname, school, address,
+   neighbourhood, phone, date of birth or photo, and no free-text box for
+   accessibility. A teen who needs something raises it with a person at the
+   Level 3 meeting rather than typing a medical detail into a record an adult
+   they have never met can read.
+
+   Free text here runs teen to organization only. Nothing in this stage, or
+   any later one, gives an organization a prose channel back.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const AVAILABILITY_OPTS = [["weekday_after_school", "Weekdays after school"], ["weekday_daytime", "Weekdays during the day"], ["weekends", "Weekends"], ["evenings", "Evenings"], ["flexible", "Flexible"]];
+
+/* A gentle nudge, not a gate.
+   Teenagers overshare by default, and the honest fix is to notice and say so
+   at the moment it happens rather than to reject the form or quietly store
+   it. Deliberately warns and lets them submit anyway: this is their
+   application, and a false positive that blocks it would be worse than a
+   sentence of advice they choose to ignore. */
+function oversharingHints(text) {
+  const t = String(text || "");
+  const hints = [];
+  if (/\b\d{3}[\s.-]?\d{3}[\s.-]?\d{4}\b/.test(t)) hints.push("a phone number");
+  if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(t)) hints.push("an email address");
+  if (/\b[A-Za-z]\d[A-Za-z][\s-]?\d[A-Za-z]\d\b/.test(t)) hints.push("a postal code");
+  if (/\b\d{1,5}\s+\w+\s+(street|st|avenue|ave|road|rd|drive|dr|crescent|cres|boulevard|blvd|way|lane)\b/i.test(t)) hints.push("a street address");
+  if (/\b(secondary school|high school|collegiate|C\.?I\.?)\b/i.test(t)) hints.push("your school");
+  return hints;
+}
+
+function ApplyModal({
+  opp,
+  profile,
+  onClose,
+  onDone
+}) {
+  const [availability, setAvailability] = useState("flexible");
+  const [experience, setExperience] = useState("");
+  const [motivation, setMotivation] = useState("");
+  const [prior, setPrior] = useState("");
+  const [accessibility, setAccessibility] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  // Capabilities the student already chose in the matcher. Carried across so
+  // they are not asked the same question twice, and snapshotted onto the
+  // application so nothing org-facing needs to read their profile.
+  const skills = (profile && profile.skills ? String(profile.skills).split(/;|\n/) : []).map(s => s.trim()).filter(Boolean).slice(0, 6);
+
+  const hints = [...new Set([...oversharingHints(experience), ...oversharingHints(motivation), ...oversharingHints(prior)])];
+
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const submit = async e => {
+    e.preventDefault();
+    if (busy) return;
+    setErr("");
+    setBusy(true);
+    try {
+      await window.riseCloud.submitApplication({
+        opportunityId: opp.id,
+        availability,
+        experience,
+        motivation,
+        prior,
+        accessibility,
+        skills
+      });
+      setDone(true);
+      onDone && onDone();
+    } catch (e2) {
+      setErr(e2.message || "Couldn't send that. Try again.");
+    }
+    setBusy(false);
+  };
+
+  const field = (label, value, setter, placeholder, hint) => /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, label), hint && /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      marginBottom: 6,
+      lineHeight: 1.55
+    }
+  }, hint), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 3,
+    value: value,
+    placeholder: placeholder,
+    onChange: e => setter(e.target.value),
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit"
+    }
+  }));
+
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(22,17,10,.5)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 18,
+      backdropFilter: "blur(3px)",
+      overflowY: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    className: "card",
+    style: {
+      width: "100%",
+      maxWidth: 540,
+      padding: "26px 24px",
+      background: "var(--surface)",
+      maxHeight: "92vh",
+      overflowY: "auto"
+    }
+  }, done ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 24,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "Application sent"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.8,
+      marginBottom: 16
+    }
+  }, opp.org, " will see your application. You can check where it is up to, or withdraw it, from My Hours at any time."), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: onClose
+  }, "Done")) : /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    noValidate: true
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 6
+    }
+  }, "Apply through RISE"), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      color: "var(--ink)",
+      marginBottom: 4,
+      lineHeight: 1.2
+    }
+  }, opp.title), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--fire)",
+      fontWeight: 600,
+      marginBottom: 16
+    }
+  }, opp.org),
+  /* Says up front what will and will not be shared. A teen deciding whether
+     to apply deserves to know what an adult on the other side will see. */
+  /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "11px 13px",
+      background: "var(--surface-warm)",
+      border: "1px solid var(--ink-6)",
+      borderRadius: 10,
+      marginBottom: 18,
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, "They see your first name, your answers below, and the skills you picked. They do not see your last name, your school, where you live, or your email."), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14
+    }
+  }, err), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "When are you free?"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: availability,
+    onChange: e => setAvailability(e.target.value)
+  }, AVAILABILITY_OPTS.map(([v, l]) => /*#__PURE__*/React.createElement("option", {
+    key: v,
+    value: v
+  }, l)))), field("What have you done that is relevant?", experience, setExperience, "Clubs, lessons, jobs, anything you have actually done.", "No need to name your school."), field("Why this one?", motivation, setMotivation, "What made you pick this role?"), field("Have you volunteered before?", prior, setPrior, "Where, and what did you do? Leave blank if this is your first time."), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "flex-start",
+      marginBottom: 6,
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: accessibility,
+    onChange: e => setAccessibility(e.target.checked),
+    style: {
+      width: 17,
+      height: 17,
+      marginTop: 2,
+      accentColor: "var(--fire)"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, "I would need an adjustment to take part")),
+  /* The reason there is no text box here, said to the person it protects. */
+  /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      lineHeight: 1.6,
+      marginBottom: 18,
+      paddingLeft: 27
+    }
+  }, "Ticking this only tells them a conversation is needed. You decide what to say, to a person, when you meet them. Nothing about your health is stored here."), !!skills.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "Skills you already told us about"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, skills.map((s, i) => /*#__PURE__*/React.createElement("span", {
+    key: i,
+    className: "badge badge-neutral",
+    style: {
+      fontSize: 11
+    }
+  }, s.length > 46 ? s.slice(0, 46) + "…" : s)))), !!hints.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "11px 13px",
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 10,
+      marginBottom: 16,
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, "It looks like you included ", hints.join(", "), ". You do not need to, and it is safer not to. You can still send it if you meant to."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn btn-fire",
+    disabled: busy,
+    style: {
+      flex: 1,
+      justifyContent: "center"
+    }
+  }, busy ? "Sending…" : "Send application"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn btn-ghost",
+    onClick: onClose
+  }, "Cancel")))));
+}
+
+/* Where a teen sees their own applications and can pull one back.
+   Withdrawing is always available and needs no reason, because the whole
+   ladder is meant to be teen-controlled: the organization asks, the student
+   decides, and changing their mind is a decision like any other. */
+const APP_STATUS_COPY = {
+  submitted: ["Sent", "They have it. Nothing needed from you yet.", "var(--fire)"],
+  under_review: ["Being read", "Someone at the organization is looking at it.", "var(--fire)"],
+  info_requested: ["They asked something", "There are a few questions waiting for you.", "var(--fire)"],
+  meeting_proposed: ["They suggested a meeting", "You choose whether to go.", "var(--fire)"],
+  accepted: ["Accepted", "They would like you to join.", "var(--success)"],
+  declined: ["Not this time", "They went another way. It is not a reflection on you.", "var(--ink-4)"],
+  withdrawn: ["Withdrawn", "You pulled this one back.", "var(--ink-4)"]
+};
+
+function MyApplications() {
+  const user = useAuth();
+  const [rows, setRows] = useState(null);
+  const [busyId, setBusyId] = useState("");
+
+  const load = useCallback(async () => {
+    setRows(await window.riseCloud.myApplications());
+  }, []);
+  useEffect(() => {
+    if (user) load();else setRows([]);
+  }, [user, load]);
+
+  const withdraw = async id => {
+    setBusyId(id);
+    try {
+      await window.riseCloud.withdrawApplication(id);
+      await load();
+    } catch (e) {}
+    setBusyId("");
+  };
+
+  if (!user) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "card",
+      style: {
+        padding: "22px 24px"
+      }
+    }, /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 14,
+        color: "var(--ink-2)",
+        lineHeight: 1.8
+      }
+    }, "Sign in to see your applications. Applying needs an account so you can follow what happens next and pull an application back if you change your mind."));
+  }
+
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.75,
+      marginBottom: 16
+    }
+  }, "Applications you have sent through RISE. Only you can see these."), rows === null && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Loading…"), rows && !rows.length && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "22px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.8
+    }
+  }, "Nothing yet. RISE Verified roles in your matches have an ", /*#__PURE__*/React.createElement("strong", null, "Apply through RISE"), " button.")), rows && rows.map(a => {
+    const [label, sub, colour] = APP_STATUS_COPY[a.status] || APP_STATUS_COPY.submitted;
+    const open = a.status !== "withdrawn" && a.status !== "declined";
+    return /*#__PURE__*/React.createElement("div", {
+      key: a.id,
+      className: "card",
+      style: {
+        padding: "16px 18px",
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 700,
+        color: colour,
+        marginBottom: 3
+      }
+    }, label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: "var(--ink-2)",
+        lineHeight: 1.7,
+        marginBottom: 8
+      }
+    }, sub), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--ink-4)"
+      }
+    }, "Sent ", new Date(a.created_at).toLocaleDateString()), open && /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-ghost",
+      disabled: busyId === a.id,
+      style: {
+        marginTop: 11,
+        fontSize: 12,
+        padding: "6px 12px"
+      },
+      onClick: () => withdraw(a.id)
+    }, busyId === a.id ? "Withdrawing…" : "Withdraw"));
+  }));
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
