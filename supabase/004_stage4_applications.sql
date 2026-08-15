@@ -104,12 +104,26 @@ create table if not exists public.applications (
 -- there is no address to relay and nothing should be able to use it.
 alter table public.applications drop column if exists masked_reply_to;
 
+-- Renames the column if an earlier run of this file created it, so the file
+-- stays safe to re-run either way.
+do $$ begin
+  alter table public.applications rename column applicant_first_name to applicant_display_name;
+exception when undefined_column then null; when duplicate_column then null; end $$;
+
 alter table public.applications
-  -- First name only, snapshotted at submit. This is what lets the
-  -- organization-facing surface in the next stage read ONLY this table: it
-  -- never needs a path to `profiles`, which holds a full name. An org getting
-  -- a minor's surname should not be one careless join away.
-  add column if not exists applicant_first_name text,
+  -- "Sarah M." — first name plus last initial, snapshotted at submit.
+  --
+  -- An organization does not need a minor's full legal name to decide whether
+  -- to review an application, and handing an adult-run organization a child's
+  -- complete identity before anyone has met is the over-exposure this whole
+  -- stage exists to avoid. If they need the full name for their own records,
+  -- that happens in person at the Level 3 meeting, from the teen, not from a
+  -- database row.
+  --
+  -- Snapshotting it here is also what lets the organization dashboard read
+  -- ONLY this table. It never needs a path to `profiles`, which holds the
+  -- full name, so an org is not one careless join away from a surname.
+  add column if not exists applicant_display_name text,
 
   add column if not exists availability application_availability,
   add column if not exists relevant_experience text,
@@ -142,6 +156,29 @@ comment on table public.applications is
 comment on column public.applications.has_accessibility_needs is
   'Flag only, by design. Specifics are raised with a person at the Level 3 '
   'meeting. Do not add a free-text accessibility column in a later migration.';
+
+
+-- ── Display name ───────────────────────────────────────────────────────
+-- "Sarah Mekouar" -> "Sarah M."   "Sarah Anne Mekouar" -> "Sarah M."
+-- "Sarah" -> "Sarah"              ""/null -> null
+--
+-- Takes the initial of the LAST token rather than the second, so a middle
+-- name does not leak a different letter than the family name. A single-token
+-- name gets no initial rather than an awkward "Sarah S.".
+create or replace function public.rise_display_name(p_full text)
+returns text
+language sql
+immutable
+as $$
+  select case
+    when p_full is null or btrim(p_full) = '' then null
+    when array_length(string_to_array(btrim(p_full), ' '), 1) = 1
+      then split_part(btrim(p_full), ' ', 1)
+    else split_part(btrim(p_full), ' ', 1) || ' ' ||
+         upper(left((string_to_array(btrim(p_full), ' '))[
+           array_length(string_to_array(btrim(p_full), ' '), 1)], 1)) || '.'
+  end
+$$;
 
 
 -- ── Submit ─────────────────────────────────────────────────────────────
@@ -187,12 +224,12 @@ begin
     raise exception 'That opportunity is not open for applications';
   end if;
 
-  -- First token of the stored name, so no surname is ever copied across.
-  select nullif(split_part(coalesce(full_name, ''), ' ', 1), '')
+  -- First name plus last initial. The surname itself is never copied across.
+  select public.rise_display_name(full_name)
     into v_first from public.profiles where id = v_uid;
 
   insert into public.applications (
-    opportunity_id, volunteer_id, applicant_first_name, availability,
+    opportunity_id, volunteer_id, applicant_display_name, availability,
     relevant_experience, motivation, prior_volunteering,
     has_accessibility_needs, skills_snapshot, status, submitted_at
   ) values (
@@ -270,9 +307,9 @@ revoke all on public.applications from anon;
 
 -- Belt and braces: even if a future migration grants UPDATE on this table,
 -- the status column stays out of reach of a client.
-revoke insert (status, submitted_at, withdrawn_at, applicant_first_name)
+revoke insert (status, submitted_at, withdrawn_at, applicant_display_name)
   on public.applications from anon, authenticated;
-revoke update (status, submitted_at, withdrawn_at, applicant_first_name)
+revoke update (status, submitted_at, withdrawn_at, applicant_display_name)
   on public.applications from anon, authenticated;
 
 -- From 003.
