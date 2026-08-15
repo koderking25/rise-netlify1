@@ -348,9 +348,23 @@ async function audit(sb, caller, action, targetType, targetId, detail) {
    The key is set here and nowhere else, and no response from these calls is
    ever returned verbatim to the caller. */
 function supa(url, key) {
+  /* Two key formats are in the wild and they authenticate differently.
+
+     Legacy `service_role` keys are JWTs. PostgREST reads the role claim out
+     of the Authorization header, so the key has to go there.
+
+     The newer `sb_secret_…` keys are opaque, not JWTs. They are resolved from
+     the `apikey` header, and putting one in `Authorization: Bearer` hands
+     PostgREST a string it may try to decode as a JWT and reject — a 401 that
+     looks like a permissions problem rather than a format one.
+
+     So: `apikey` always, and `Authorization` only when the key is actually a
+     JWT. Correct for both, and it keeps working if the project is migrated
+     from one to the other without anyone remembering this file exists. */
+  const isJwt = /^ey[A-Za-z0-9_-]*\./.test(key);
   const headers = {
     apikey: key,
-    Authorization: "Bearer " + key,
+    ...(isJwt ? { Authorization: "Bearer " + key } : {}),
     "Content-Type": "application/json"
   };
   const check = async r => {
