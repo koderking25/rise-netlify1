@@ -325,18 +325,90 @@ if (typeof window !== "undefined" && !window.riseCloud) {
         if (role === "organization" || role === "admin") user.role = role;
       } catch (e) {}
     }
-    async function refresh() {
+    /* Renewing an expired access token.
+
+       This used to sign people out for reasons that were not their fault.
+       Two failures, both of which destroyed the stored session:
+
+       1. ANY failure ended at `setSession(null)`, which writes null over
+          `rise_session` and throws the refresh token away. A dropped
+          connection, a moment offline, a 500 from the auth server — all of
+          them logged the user out permanently, with nothing left to recover
+          from. A transient network error must never cost someone their
+          session.
+
+       2. Supabase ROTATES refresh tokens: using one issues a replacement and
+          invalidates the original. With several tabs open, every tab wakes up
+          with the same expired access token and calls this at once. The first
+          wins; the rest are told "already used" and, under the old code, each
+          concluded the session was dead and wiped it. Opening RISE in a
+          second tab was enough to sign you out of both.
+
+       So: one refresh in flight at a time, storage re-read before and after in
+       case a sibling tab already did the work, and the session is only cleared
+       when the server explicitly rejects the token — never on a network
+       failure or a 5xx. */
+    let refreshing = null;
+    function readStoredSession() {
       try {
-        const r = await fetch(SUPA_URL + "/auth/v1/token?grant_type=refresh_token", {
-          method: "POST",
-          headers: H(),
-          body: JSON.stringify({
-            refresh_token: session.refresh_token
-          })
-        });
-        if (r.ok) return setSession(await r.json());
-      } catch (e) {}
-      return setSession(null);
+        return JSON.parse(localStorage.getItem("rise_session") || "null");
+      } catch (e) {
+        return null;
+      }
+    }
+    async function refresh() {
+      // Single-flight. Concurrent callers await the same request rather than
+      // racing each other to spend the same one-use token.
+      if (refreshing) return refreshing;
+      refreshing = (async () => {
+        try {
+          // A sibling tab may have rotated seconds ago. Prefer whatever is in
+          // storage over the copy this tab happens to be holding.
+          const stored = readStoredSession();
+          if (stored && stored.refresh_token && session && stored.refresh_token !== session.refresh_token) {
+            session = stored;
+            save();
+            return await setSession(stored);
+          }
+          const rt = session && session.refresh_token;
+          if (!rt) return await setSession(null);
+
+          const r = await fetch(SUPA_URL + "/auth/v1/token?grant_type=refresh_token", {
+            method: "POST",
+            headers: H(),
+            body: JSON.stringify({
+              refresh_token: rt
+            })
+          });
+          if (r.ok) return await setSession(await r.json());
+
+          if (r.status === 400 || r.status === 401) {
+            /* The server rejected the token. Usually that means it is genuinely
+               dead — but it also means "already used", which is what a sibling
+               tab's successful refresh looks like from here. Check storage once
+               more before concluding anything. */
+            const after = readStoredSession();
+            if (after && after.access_token && after.refresh_token !== rt) {
+              session = after;
+              save();
+              return await setSession(after);
+            }
+            return await setSession(null);
+          }
+
+          /* 5xx, rate limiting, anything else: the token is probably fine and
+             the server is not. Keep it and let the next attempt try again. */
+          notify();
+          return;
+        } catch (e) {
+          // Network failure. Keep the session; this is not a sign-out.
+          notify();
+          return;
+        } finally {
+          refreshing = null;
+        }
+      })();
+      return refreshing;
     }
     // Returning from a Google OAuth redirect? Tokens arrive in the URL hash.
     (function captureOAuthReturn() {
