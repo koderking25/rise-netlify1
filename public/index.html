@@ -2133,6 +2133,22 @@ const SERVE_OPTS = [{
   id: "seniors",
   label: "Seniors"
 }, {
+  /* One "People with disabilities" option was too coarse to search with. The
+     organizations are genuinely separate (CNIB and Canadian Hearing Services
+     are not interchangeable), the roles differ, and so does what a student
+     needs to know before their first shift: a low-vision reading program wants
+     a clear reading voice, a Deaf community group may want a student learning
+     ASL. Naming the community lets the engine find the right organization
+     instead of a generic disability charity.
+
+     The `disability` id is kept exactly as it was so profiles saved before this
+     split still match on it. */
+  id: "blind-lowvision",
+  label: "Blind and low vision"
+}, {
+  id: "deaf-hoh",
+  label: "Deaf and hard of hearing"
+}, {
   id: "disability",
   label: "People with disabilities"
 }, {
@@ -2162,7 +2178,10 @@ const JSON_SHAPE = `[{
   "requirements": "Age minimum, screening, or training if any, e.g. '15+, orientation session required'. Use 'None listed' if there are none.",
   "where": "Specific area served",
   "hours": "X hrs/week",
-  "link": "https://homepage-only.ca",
+  "link": "The organization's own page for this role, or its homepage if that is genuinely all that exists.",
+  "applyLink": "The exact url where this student actually applies: the application form, the volunteer intake page, or the third-party portal (BetterImpact, Volunteer Connector, Galaxy Digital, a Google Form) the organization sends applicants to. You have web_fetch, so open the site and follow Volunteer or Get Involved until you reach it rather than guessing. Open the page before you name it. OMIT this field entirely if there is no online application and applying means emailing or phoning, and say which in firstStep.",
+  "minAge": "The minimum age the organization states, as a number, e.g. 16. OMIT if the page does not state one. Never guess: a student turned away at the door because we implied they were eligible is worse than us saying we do not know.",
+  "screening": "Any police record check, vulnerable sector check, reference requirement, or mandatory training the page states, in a few words. OMIT if none is stated.",
   "contactEmail": "ONLY a real volunteer/general contact email you are confident actually exists for this organization (e.g. volunteer@org.ca or info@org.ca). If you are not sure it is real, OMIT this field entirely. Never invent, guess, or pattern-match an email address.",
   "tags": ["youth-friendly"]
 }]
@@ -2331,6 +2350,19 @@ const OPP_SCHEMA = {
          it. Inferring remoteness from free text got it wrong often enough to
          put impossible roles at the top of the list. */
       remote: S("BOOLEAN"),
+      /* The three fields the deep fetch exists to produce. As the sourceUrl
+         note above says, a field absent from this schema cannot be returned no
+         matter what the prompt asks for, so adding them here is what makes the
+         traversal worth paying for.
+
+         None are required. An organization that takes applications by email has
+         no applyLink, and a page that never states an age has no minAge. Making
+         them required would only invite the model to fill them in, and an
+         invented age floor is worse than a missing one: a student turned away
+         at the door because we implied they were eligible. */
+      applyLink: S("STRING"),
+      minAge: S("INTEGER"),
+      screening: S("STRING"),
       tags: {
         type: "ARRAY",
         items: S("STRING")
@@ -3407,6 +3439,44 @@ const BUILTIN_OPPS = {
     tags: ["youth-friendly", "local"]
   }],
   community: [{
+    /* Added after opening each of these sites and confirming every link
+       resolves. The two Brantford entries are deliberately specific rather than
+       national: a student can act on them this week, and they bracket the age
+       range usefully. The library takes anyone who has finished Grade 8, which
+       covers most of RISE's 14 year olds; the food bank starts at 16. Saying
+       both plainly is the point, because the door is the worst place to find
+       out you are too young. */
+    title: "Youth Volunteer",
+    org: "Brantford Public Library",
+    tagline: "Tell a library what teenagers actually want from it.",
+    desc: "You complete short Youth Gigs, give staff a teenage read on what the library buys and runs, and help shape teen programs. The only qualification listed is having finished Grade 8, which makes this one of the easiest real roles to start with.",
+    hours: "1-2 hrs/week",
+    link: "https://www.brantfordlibrary.ca/about-the-library/support-your-library/volunteering/",
+    applyLink: "https://forms.brantfordlibrary.ca/Volunteer-Application",
+    minAge: 13,
+    screening: "None listed",
+    tags: ["youth-friendly", "brantford", "no-experience"]
+  }, {
+    title: "Food Bank Volunteer",
+    org: "Brantford Food Bank (Community Resource Service)",
+    tagline: "Sorting, stocking, and handing groceries to neighbours.",
+    desc: "The Brantford Food Bank runs under Community Resource Service, so the intake lives on the CRS site and applications go through their BetterImpact portal. Students wanting summer shifts are asked to apply by June 1 and commit to one shift a week through July and August.",
+    hours: "1 shift/week",
+    link: "https://crs-help.ca/volunteer",
+    applyLink: "https://app.betterimpact.com/Application?ApplicationFormNumber=1&OrganizationGuid=9529f3c4-e3a1-4858-bcf0-19f37931f03c",
+    minAge: 16,
+    screening: "Vulnerable sector check, two non-family references",
+    tags: ["brantford", "food-security"]
+  }, {
+    title: "Find your local food bank",
+    org: "Food Banks Canada",
+    tagline: "Almost every town has one, and most are short-handed.",
+    desc: "If you are not in Brantford, this finder lists member food banks across the country. Sorting and stocking shifts rarely need experience, though each location sets its own minimum age, so check the one near you before counting on it.",
+    hours: "2-4 hrs/week",
+    link: "https://foodbankscanada.ca/find-a-food-bank/",
+    screening: "Varies by location",
+    tags: ["national", "food-security", "no-experience"]
+  }, {
     title: "Tech Mentor for Seniors",
     org: "Cyber-Seniors",
     tagline: "Teach FaceTime. Change a grandparent's life.",
@@ -6627,8 +6697,16 @@ function ResultCardBase({
       gap: 12,
       flexWrap: "wrap"
     }
-  }, /*#__PURE__*/React.createElement("a", {
-    href: opp.link,
+  },
+  /* When the matcher has walked the site and found the actual application
+     form, send the student there rather than to the front door. Landing on a
+     homepage and hunting for "Get Involved" is where most of them quietly give
+     up, and it is the whole reason the deep fetch exists.
+
+     Falls back to the organization's page whenever no form was found, which is
+     the honest outcome for charities that take applications by email. */
+  /*#__PURE__*/React.createElement("a", {
+    href: opp.applyLink || opp.link,
     target: "_blank",
     rel: "noreferrer",
     style: {
@@ -6646,9 +6724,25 @@ function ResultCardBase({
     },
     onMouseEnter: e => e.currentTarget.style.opacity = ".78",
     onMouseLeave: e => e.currentTarget.style.opacity = "1"
-  }, "Visit ", host, " ", /*#__PURE__*/React.createElement(ExternalLink, {
+  }, opp.applyLink ? "Apply" : "Visit " + host, " ", /*#__PURE__*/React.createElement(ExternalLink, {
     size: 11
   })),
+  /* Age floors and police checks decide whether a 14 year old can apply at
+     all. Shown next to the button rather than buried in the description,
+     because finding out at the door is the worst place to find out. Only
+     rendered when the page actually stated it; silence here means unknown,
+     never "no requirement". */
+  (opp.minAge || opp.screening) && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11.5,
+      fontWeight: 600,
+      color: "var(--muted)",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      flexShrink: 0
+    }
+  }, [opp.minAge ? opp.minAge + "+" : null, opp.screening || null].filter(Boolean).join("  \u00b7  ")),
   // Writing the first email is the step most students stall on, so it gets a
   // button of its own rather than living in a menu.
   /*#__PURE__*/
