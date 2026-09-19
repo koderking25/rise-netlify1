@@ -165,6 +165,45 @@ export async function onRequestPost(ctx) {
     }
   }
 
+  /* ── Every link the model produced, opened before it is handed over ──
+     The model is told to open an application page before recommending it, and
+     mostly does. Mostly is not good enough when the failure lands on a
+     fifteen year old as a page-not-found: that is the moment they conclude
+     the site does not work and stop.
+
+     So the claim is checked rather than trusted. A dead applyLink is removed
+     rather than the whole match discarded, because the organization is
+     usually real even when the deep link has rotted, and a student is far
+     better off on a working homepage than on nothing. A link confirmed
+     reachable is marked so the card can say so.
+
+     Unknown stays unknown. A timeout from our edge is not evidence a charity
+     is gone, and guessing would strip good placements. */
+  if (out && Array.isArray(out.parsed) && out.parsed.length) {
+    try {
+      const wanted = [];
+      for (const it of out.parsed) {
+        if (it && typeof it.applyLink === "string") wanted.push(it.applyLink);
+        if (it && typeof it.link === "string") wanted.push(it.link);
+      }
+      if (wanted.length) {
+        const seen = await verifyUrls([...new Set(wanted)]);
+        let dropped = 0;
+        for (const it of out.parsed) {
+          const a = it && it.applyLink && seen[it.applyLink];
+          if (a && a.ok === false) { delete it.applyLink; dropped++; }
+          else if (a && a.ok === true) it.applyVerified = true;
+          const l = it && it.link && seen[it.link];
+          if (l) it.linkOk = l.ok;
+        }
+        out.linksChecked = Object.keys(seen).length;
+        out.deadApplyLinksDropped = dropped;
+      }
+    } catch (e) {
+      // Verification is a safeguard, not a gate. If it fails, still answer.
+    }
+  }
+
   /* Shared entries live much longer than personalised ones. Volunteer postings
      do not turn over every half hour, and a cohort cache that expires in 30
      minutes buys the same search again for the next class. Callers can ask for
@@ -650,7 +689,15 @@ async function verifyUrls(urls) {
         if (res.status === 405 || res.status === 501) {
           res = await fetch(u, { method: "GET", redirect: "follow", signal: ctrl.signal });
         }
-        results[u] = { ok: res.status >= 200 && res.status < 400, status: res.status };
+        /* 401/403/405/406/429 mean "not to you, not like that", not "not
+           here". Several large charities refuse any client that is not a
+           browser, and Red Cross, Scouts, Tree Canada and Best Buddies all
+           answer 403 to this check while working perfectly for a student.
+           Marking those dead would delete the most reputable placements on
+           the site. Only a real 404 or 410 counts as gone. */
+        const blocked = [401, 403, 405, 406, 429].includes(res.status);
+        const gone = res.status === 404 || res.status === 410;
+        results[u] = { ok: gone ? false : (blocked ? null : res.status >= 200 && res.status < 400), status: res.status };
       } catch {
         // Timeout or DNS failure isn't proof the site is dead — report unknown.
         results[u] = { ok: null, status: 0 };

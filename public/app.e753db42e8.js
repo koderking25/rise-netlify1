@@ -3168,7 +3168,7 @@ const BUILTIN_OPPS = {
     tagline: "Story time hits different with a soundtrack.",
     desc: "Most library systems run kids' programs, teen groups, and community events where musical volunteers stand out. Search your city's library site for volunteer info.",
     hours: "1-3 hrs/week",
-    link: "https://www.canada.ca/en/services/culture/libraries.html",
+    link: "https://www.volunteer.ca",
     tags: ["youth-friendly", "local"]
   }, {
     title: "Long-Term Care Performance Volunteer",
@@ -3241,7 +3241,7 @@ const BUILTIN_OPPS = {
     tagline: "Grow food, grow community. Literally.",
     desc: "Community gardens in nearly every Canadian city want youth volunteers for planting, upkeep, and harvests that often go to local food banks.",
     hours: "1-3 hrs/week",
-    link: "https://communityfoodcentres.ca",
+    link: "https://foodbankscanada.ca/find-a-food-bank/",
     tags: ["youth-friendly", "local"]
   }],
   education: [{
@@ -3290,7 +3290,7 @@ const BUILTIN_OPPS = {
     tagline: "The original tutoring venue.",
     desc: "Most library systems run homework help and reading buddy programs staffed by teen volunteers. Check your city library's volunteer page.",
     hours: "1-2 hrs/week",
-    link: "https://www.canada.ca/en/services/culture/libraries.html",
+    link: "https://www.volunteer.ca",
     tags: ["youth-friendly", "local"]
   }, {
     title: "Peer Tutor",
@@ -3371,7 +3371,7 @@ const BUILTIN_OPPS = {
     tagline: "Every house league needs one more assistant coach.",
     desc: "Hockey, soccer, baseball, basketball: local leagues take teen assistant coaches and scorekeepers every season. Contact your city's league directly.",
     hours: "2-4 hrs/week",
-    link: "https://www.canada.ca/en/services/culture/sport.html",
+    link: "https://www.coach.ca",
     tags: ["youth-friendly", "local"]
   }],
   business: [{
@@ -3516,7 +3516,7 @@ const BUILTIN_OPPS = {
     tagline: "Good food is community glue.",
     desc: "Community food centres run meal programs, gardens, and food-skills classes powered by volunteers in cities across the country.",
     hours: "2-3 hrs/week",
-    link: "https://communityfoodcentres.ca",
+    link: "https://foodbankscanada.ca/find-a-food-bank/",
     tags: ["youth-friendly", "national"]
   }, {
     title: "Hospital Volunteer",
