@@ -50,6 +50,12 @@ binding = "ASSETS"
 # RISE routes in the client, so a deep link should still return the app rather
 # than a 404 page.
 not_found_handling = "single-page-application"
+# Static assets are normally served before the Worker ever runs, which is why
+# the maintenance lock did not take: "/" matched index.html and was answered by
+# the asset server directly, while "/api/*" matched nothing and fell through to
+# the Worker. With this set, the Worker sees every request first and can hold
+# the whole site closed.
+run_worker_first = true
 
 [observability]
 enabled = true

@@ -25,7 +25,7 @@
      display=swap, text paints immediately in the fallback face and swaps when
      DM Sans arrives. The <noscript> keeps it working with JS disabled. -->
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"/>
-<link rel="stylesheet" media="print" onload="this.media='all';this.onload=null" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"/>
+<link rel="stylesheet" media="print" id="rise-fonts" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"/>
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"/></noscript>
 <!-- Mirrors COPY.metaDesc for the current GLOBAL_MODE. The app also rewrites
      this at runtime, but crawlers and link previews read the static tag, so
@@ -52,6 +52,18 @@
         document.documentElement.setAttribute("data-theme", "dark");
         document.documentElement.style.colorScheme = "dark";
       }
+    } catch (e) {}
+
+    /* The font sheet loads as media="print" so it does not block the first
+       paint, then is promoted to all once it has arrived. That promotion used
+       to be an inline onload="" attribute on the link. Inline handlers are
+       exactly what an injected script relies on, so the Content-Security-
+       Policy refuses them, and this file must not contain one. Doing it here
+       keeps the same behaviour inside the single inline block the policy
+       allows by hash. */
+    try {
+      var f = document.getElementById("rise-fonts");
+      if (f) f.addEventListener("load", function () { f.media = "all"; }, { once: true });
     } catch (e) {}
   })();
 </script>
