@@ -1,0 +1,17 @@
+# The app bundle and the React copies carry their version in the filename, so a
+# new deploy produces a new URL. That makes them safe to cache permanently: a
+# returning visitor downloads none of it again, and can never be served a stale
+# bundle, because a changed bundle is a different file.
+/app.*.js
+  Cache-Control: public, max-age=31536000, immutable
+/react.*.js
+  Cache-Control: public, max-age=31536000, immutable
+/react-dom.*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+# The HTML is the one file that must never be cached hard: it is what points at
+# the current bundle, so a stale copy would pin a visitor to an old app forever.
+/
+  Cache-Control: public, max-age=0, must-revalidate
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate

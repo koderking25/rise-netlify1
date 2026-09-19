@@ -1,0 +1,16118 @@
+
+/* Precompiled from JSX */
+const {
+  useState,
+  useEffect,
+  useCallback,
+  useRef
+} = React;
+
+/* ═══════════════════════════════════════════════════════════════
+   ★ GLOBAL MODE — the one switch. ★
+
+     false → RISE as it launched: Canadian cities, Canadian
+             organizations, "Youth Volunteering · Canada".
+     true  → the global build: world regions in the location list,
+             the remote/international library, and the
+             "Born in Canada. Reaching the world." branding.
+
+   Flip this single line to change the whole product. Everything
+   below reads GLOBAL_MODE rather than hard-coding either version,
+   so both stay in sync — a bug fixed or a matching improvement made
+   in Canada mode is automatically there in global mode too.
+
+   That is the reason this is a flag and not a saved copy of the
+   old file: a frozen snapshot would drift further out of date with
+   every change, and going global would mean re-applying months of
+   work by hand. Here it costs one word.
+
+   What it controls, all in this file:
+     • LOC_GROUPS      — the "Rest of the world" regions
+     • COPY            — hero, stat cards, marquee, meta description
+     • useGlobal       — whether GLOBAL_OPPS can ever be reached
+   ═══════════════════════════════════════════════════════════════ */
+const GLOBAL_MODE = false;
+
+/* Every string that changes between the two products, side by side so the
+   difference is readable in one place instead of scattered across the page.
+   The Canada column is the original launch copy, restored verbatim. */
+const COPY = GLOBAL_MODE ? {
+  metaDesc: "Born in Canada. Reaching the world. RISE matches young people aged 14-18 to real volunteer roles that need their specific talents — locally or anywhere in the world.",
+  eyebrow: "Born in Canada. Reaching the world.",
+  heroLede: "Every young person has something to offer. RISE matches what you can actually do to the people who need exactly that — down the street or on the other side of the world.",
+  statBigLabel: "Cities, worldwide",
+  statBigSub: "Start where you are, serve anywhere",
+  statThirdNum: "Global",
+  statThirdLabel: "Serve from anywhere",
+  statThirdSub: "In your neighbourhood, or remotely for a cause across the world",
+  fromHomeSub: "Remote work for a cause anywhere in the world",
+  marquee: ["Born in Canada · Reaching the world", "Matched to your talent", "Free forever", "Built by students", "Local or remote", "Music · Sports · Education", "Real community impact"]
+} : {
+  metaDesc: "RISE matches Canadian students aged 14-18 with volunteer opportunities that fit their talents. Track your 40 hours. Turn talent into impact.",
+  eyebrow: "Youth Volunteering · Canada",
+  heroLede: "Every young person has something to offer. RISE connects your specific talents to the communities that need exactly that.",
+  statBigLabel: "Cities across Canada",
+  statBigSub: "From Vancouver to Halifax",
+  statThirdNum: "Canada-wide",
+  statThirdLabel: "Hours tracker",
+  statThirdSub: "Hit your service goal in any province or territory",
+  fromHomeSub: "Remote work for a cause, from wherever you are",
+  marquee: ["60+ Canadian cities", "Matched to your talent", "Free forever", "Built by students", "Ontario OSSD ready", "Music · Sports · Education", "Real community impact"]
+};
+try {
+  const md = document.querySelector('meta[name="description"]');
+  if (md) md.setAttribute("content", COPY.metaDesc);
+} catch (e) {}
+
+/* ═══════════════════════════════════════════════════════════════
+   RISE CLOUD - self-contained auth + storage.
+   Inside the Lovable host app  → everything (incl. Google) routes
+   through the parent bridge; Google now WAITS for the bridge
+   handshake, killing the race that made clicks "do nothing".
+   Standalone / artifact         → email sign-in + cloud sync work
+   directly against Supabase over fetch. Google needs the host app.
+   ═══════════════════════════════════════════════════════════════ */
+const SUPA_URL = "https://okpqytfeyjkbxgjrbaen.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9rcHF5dGZleWprYnhnanJiYWVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzNzg5ODYsImV4cCI6MjA5OTk1NDk4Nn0.3FW2i9vqkcOiwcIY2wHFJCmXadDuVsGC_VwjGMoIgSg";
+
+/* Storage shim: Claude's preview provides window.storage natively; everywhere
+   else (Netlify, any host) this installs a localStorage-backed equivalent.
+   Without this, every state-saving click crashed the app on real hosting. */
+if (typeof window !== "undefined" && !window.storage) {
+  window.storage = {
+    async get(k) {
+      try {
+        const v = localStorage.getItem(k);
+        return v == null ? null : {
+          key: k,
+          value: v
+        };
+      } catch (e) {
+        return null;
+      }
+    },
+    async set(k, v) {
+      try {
+        localStorage.setItem(k, v);
+      } catch (e) {}
+    },
+    async delete(k) {
+      try {
+        localStorage.removeItem(k);
+      } catch (e) {}
+    }
+  };
+}
+if (typeof window !== "undefined" && !window.riseCloud) {
+  window.riseCloud = function () {
+    let user = null;
+    let session = null; // { access_token, refresh_token }
+    const listeners = new Set();
+    const notify = () => listeners.forEach(fn => {
+      try {
+        fn(user);
+      } catch (e) {}
+    });
+
+    /* ── Bridge (Lovable host) ── */
+    let bridge = false;
+    const pending = new Map();
+    const inFrame = (() => {
+      try {
+        return window.self !== window.top;
+      } catch (e) {
+        return true;
+      }
+    })();
+    const bridgeReady = () => bridge;
+    function call(action, payload) {
+      return new Promise((resolve, reject) => {
+        const id = "r" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        pending.set(id, {
+          resolve,
+          reject
+        });
+        window.parent.postMessage({
+          source: "rise-iframe",
+          id,
+          action,
+          payload
+        }, "*");
+        setTimeout(() => {
+          if (pending.has(id)) {
+            pending.delete(id);
+            reject(new Error("The host app didn't respond - try again."));
+          }
+        }, 45000);
+      });
+    }
+    if (typeof window.addEventListener === "function") window.addEventListener("message", e => {
+      const d = e.data;
+      if (!d || d.source !== "rise-parent") return;
+      bridge = true;
+      if (d.type === "auth") {
+        user = d.user || null;
+        notify();
+      }
+      if (d.replyTo && pending.has(d.replyTo)) {
+        const p = pending.get(d.replyTo);
+        pending.delete(d.replyTo);
+        d.error ? p.reject(Object.assign(new Error(d.error.message || "Something went wrong."), {
+          code: d.error.code
+        })) : p.resolve(d.value);
+      }
+    });
+    function ping() {
+      try {
+        window.parent.postMessage({
+          source: "rise-iframe",
+          action: "ready"
+        }, "*");
+      } catch (e) {}
+    }
+    if (inFrame) {
+      ping();
+      let t = 0;
+      const hs = setInterval(() => {
+        if (bridge || t++ > 12) return clearInterval(hs);
+        ping();
+      }, 350);
+    }
+    async function waitForBridge(ms = 4000) {
+      const end = Date.now() + ms;
+      while (!bridge && Date.now() < end) {
+        ping();
+        await new Promise(r => setTimeout(r, 300));
+      }
+      return bridge;
+    }
+
+    /* ── Direct Supabase (standalone) ── */
+    const H = tok => ({
+      "Content-Type": "application/json",
+      apikey: SUPA_KEY,
+      Authorization: "Bearer " + (tok || SUPA_KEY)
+    });
+    const save = () => {
+      try {
+        localStorage.setItem("rise_session", JSON.stringify(session));
+      } catch (e) {}
+    };
+    async function setSession(s) {
+      session = s;
+      save();
+      if (!s) {
+        user = null;
+        notify();
+        return;
+      }
+      try {
+        const r = await fetch(SUPA_URL + "/auth/v1/user", {
+          headers: H(s.access_token)
+        });
+        if (r.ok) {
+          const u = await r.json();
+          user = {
+            uid: u.id,
+            email: u.email,
+            name: u.user_metadata?.full_name || u.user_metadata?.name || (u.email || "").split("@")[0],
+            username: u.user_metadata?.username || u.user_metadata?.full_name || "",
+            /* Provisional until the profile row is read. Defaulting to
+               "volunteer" rather than null is deliberate: every existing
+               account is a volunteer, and it means the app renders the
+               volunteer experience immediately instead of flashing a
+               loading state at people whose role never changes. */
+            role: "volunteer"
+          };
+          await loadRole(s.access_token);
+        } else if (r.status === 401 && s.refresh_token) return refresh();else user = null;
+      } catch (e) {
+        user = null;
+      }
+      notify();
+    }
+    /* Reads public.profiles.role. Additive and failure-tolerant on purpose:
+       if the table does not exist yet, or the request fails, the user stays a
+       volunteer and the app behaves exactly as it did before Stage 1. The
+       volunteer path must never depend on this call succeeding. */
+    async function loadRole(token) {
+      if (!user) return;
+      try {
+        const r = await fetch(`${SUPA_URL}/rest/v1/profiles?id=eq.${user.uid}&select=role`, {
+          headers: H(token)
+        });
+        if (!r.ok) return;
+        const rows = await r.json();
+        const role = rows && rows[0] && rows[0].role;
+        if (role === "organization" || role === "admin") user.role = role;
+      } catch (e) {}
+    }
+    /* Renewing an expired access token.
+
+       This used to sign people out for reasons that were not their fault.
+       Two failures, both of which destroyed the stored session:
+
+       1. ANY failure ended at `setSession(null)`, which writes null over
+          `rise_session` and throws the refresh token away. A dropped
+          connection, a moment offline, a 500 from the auth server — all of
+          them logged the user out permanently, with nothing left to recover
+          from. A transient network error must never cost someone their
+          session.
+
+       2. Supabase ROTATES refresh tokens: using one issues a replacement and
+          invalidates the original. With several tabs open, every tab wakes up
+          with the same expired access token and calls this at once. The first
+          wins; the rest are told "already used" and, under the old code, each
+          concluded the session was dead and wiped it. Opening RISE in a
+          second tab was enough to sign you out of both.
+
+       So: one refresh in flight at a time, storage re-read before and after in
+       case a sibling tab already did the work, and the session is only cleared
+       when the server explicitly rejects the token — never on a network
+       failure or a 5xx. */
+    let refreshing = null;
+    function readStoredSession() {
+      try {
+        return JSON.parse(localStorage.getItem("rise_session") || "null");
+      } catch (e) {
+        return null;
+      }
+    }
+    async function refresh() {
+      // Single-flight. Concurrent callers await the same request rather than
+      // racing each other to spend the same one-use token.
+      if (refreshing) return refreshing;
+      refreshing = (async () => {
+        try {
+          // A sibling tab may have rotated seconds ago. Prefer whatever is in
+          // storage over the copy this tab happens to be holding.
+          const stored = readStoredSession();
+          if (stored && stored.refresh_token && session && stored.refresh_token !== session.refresh_token) {
+            session = stored;
+            save();
+            return await setSession(stored);
+          }
+          const rt = session && session.refresh_token;
+          if (!rt) return await setSession(null);
+
+          const r = await fetch(SUPA_URL + "/auth/v1/token?grant_type=refresh_token", {
+            method: "POST",
+            headers: H(),
+            body: JSON.stringify({
+              refresh_token: rt
+            })
+          });
+          if (r.ok) return await setSession(await r.json());
+
+          if (r.status === 400 || r.status === 401) {
+            /* The server rejected the token. Usually that means it is genuinely
+               dead — but it also means "already used", which is what a sibling
+               tab's successful refresh looks like from here. Check storage once
+               more before concluding anything. */
+            const after = readStoredSession();
+            if (after && after.access_token && after.refresh_token !== rt) {
+              session = after;
+              save();
+              return await setSession(after);
+            }
+            return await setSession(null);
+          }
+
+          /* 5xx, rate limiting, anything else: the token is probably fine and
+             the server is not. Keep it and let the next attempt try again. */
+          notify();
+          return;
+        } catch (e) {
+          // Network failure. Keep the session; this is not a sign-out.
+          notify();
+          return;
+        } finally {
+          refreshing = null;
+        }
+      })();
+      return refreshing;
+    }
+    // Returning from a Google OAuth redirect? Tokens arrive in the URL hash.
+    (function captureOAuthReturn() {
+      try {
+        const h = window.location.hash || "";
+        if (h.includes("access_token=")) {
+          const p = new URLSearchParams(h.replace(/^#/, ""));
+          const at = p.get("access_token"),
+            rt = p.get("refresh_token");
+          if (at) {
+            setSession({
+              access_token: at,
+              refresh_token: rt
+            });
+            try {
+              history.replaceState(null, "", window.location.pathname + window.location.search);
+            } catch (e) {}
+            // If we're the sign-in popup, close ourselves once stored
+            if (window.name === "rise-google-auth" && window.opener) {
+              setTimeout(() => {
+                try {
+                  window.close();
+                } catch (e) {}
+              }, 600);
+            }
+            return;
+          }
+        }
+      } catch (e) {}
+      try {
+        const raw = localStorage.getItem("rise_session");
+        if (raw) setSession(JSON.parse(raw));
+      } catch (e) {}
+    })();
+    // Popup ↔ opener sync: when the popup stores the session, pick it up here
+    if (typeof window.addEventListener === "function") window.addEventListener("storage", ev => {
+      if (ev.key === "rise_session" && ev.newValue && !user) {
+        try {
+          setSession(JSON.parse(ev.newValue));
+        } catch (e) {}
+      }
+    });
+    /* Calls a Postgres function. Used for the state transitions a client is
+       allowed to request but not to perform directly — the function decides
+       what actually gets written, so the client cannot name a status. */
+    async function rpc(fn, args) {
+      if (!session) throw new Error("Sign in first.");
+      const r = await fetch(`${SUPA_URL}/rest/v1/rpc/${fn}`, {
+        method: "POST",
+        headers: H(session.access_token),
+        body: JSON.stringify(args || {})
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        let msg = "";
+        try {
+          msg = JSON.parse(t).message || "";
+        } catch (e) {}
+        throw new Error(msg || "That didn't work. " + t.slice(0, 140));
+      }
+      return await r.json().catch(() => null);
+    }
+
+    /* Inserts the organizations row. Kept as a private helper rather than a
+       public method so there is exactly one place that writes this table, and
+       one place to audit for what it does and does not send. */
+    async function createOrganization(f, token) {
+      const row = {
+        owner_id: user.uid,
+        name: (f.name || "").trim(),
+        org_type: f.orgType || null,
+        registration_number: (f.registrationNumber || "").trim() || null,
+        website_url: (f.websiteUrl || "").trim() || null,
+        address_line1: (f.address1 || "").trim() || null,
+        address_line2: (f.address2 || "").trim() || null,
+        city: (f.city || "").trim() || null,
+        province: f.province || null,
+        postal_code: (f.postalCode || "").trim() || null,
+        contact_name: (f.contactName || "").trim() || null,
+        contact_position: (f.contactPosition || "").trim() || null,
+        contact_email: (f.contactEmail || "").trim().toLowerCase() || null,
+        contact_phone: (f.contactPhone || "").trim() || null
+        // verification_status intentionally absent — see signUpOrganization.
+      };
+      const r = await fetch(SUPA_URL + "/rest/v1/organizations", {
+        method: "POST",
+        headers: {
+          ...H(token),
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify(row)
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error("Couldn't save your organization details. " + t.slice(0, 160));
+      }
+      return await r.json().catch(() => null);
+    }
+    async function authPost(path, body) {
+      let r;
+      try {
+        r = await fetch(SUPA_URL + path, {
+          method: "POST",
+          headers: H(),
+          body: JSON.stringify(body)
+        });
+      } catch (netErr) {
+        // fetch() throwing = network/CORS/DNS/paused-project. Give an actionable message.
+        throw new Error("Couldn't reach the sign-in server. This usually means the database is paused (free Supabase projects pause after ~1 week idle) or this site's URL isn't allowed in Supabase. Open your Supabase dashboard to resume the project, and add this site under Authentication -> URL Configuration.");
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const msg = data.msg || data.error_description || data.message || data.error || "";
+        if (r.status === 422 && /already/i.test(msg)) throw new Error("That email already has an account - try logging in instead.");
+        if (r.status === 400 && /email/i.test(msg) && /confirm/i.test(msg)) throw new Error("Check your email to confirm your account, then log in.");
+        throw new Error(msg || "Sign-in failed (error " + r.status + "). Please try again.");
+      }
+      return data;
+    }
+    return {
+      enabled: true,
+      prewarm: async () => {
+        if (inFrame && !bridge) waitForBridge(2500);
+      },
+      getUser: () => user,
+      subscribe(fn) {
+        listeners.add(fn);
+        fn(user);
+        return () => listeners.delete(fn);
+      },
+      async signInGoogle() {
+        if (inFrame && !bridge) await waitForBridge(4000); // ← the race fix
+        if (bridge) {
+          await call("signInGoogle");
+          return;
+        }
+
+        // Standalone: Google via Supabase's OAuth in a popup (iframe-proof).
+        // Requires Google credentials in Supabase -> Auth -> Providers -> Google.
+        const redirect = window.location.origin + window.location.pathname;
+        const url = SUPA_URL + "/auth/v1/authorize?provider=google&redirect_to=" + encodeURIComponent(redirect);
+        /* Preflight against /auth/v1/settings, not /authorize.
+           /authorize answers with a cross-origin 302 that carries no CORS
+           headers, so fetching it throws for reasons that have nothing to do
+           with whether Google is configured — and the old code read that throw
+           as "the server didn't respond", telling users their setup was broken
+           when it was fine. /settings is public, CORS-enabled, and states
+           plainly which providers are on. */
+        try {
+          const s = await fetch(SUPA_URL + "/auth/v1/settings", {
+            headers: {
+              apikey: SUPA_KEY
+            }
+          });
+          if (s.ok) {
+            const cfg = await s.json().catch(() => null);
+            const on = cfg?.external?.google;
+            if (on === false) {
+              throw new Error("Google sign-in isn't set up yet. In Supabase -> Authentication -> Providers, enable Google and add your Google OAuth credentials (one-time, ~10 min). Until then, use email sign-up, which works now.");
+            }
+          }
+          // Anything else (non-200, unparseable) is inconclusive, not a
+          // failure. Fall through and let the popup report the real error.
+        } catch (e) {
+          if (e.message && e.message.includes("Google sign-in isn't set up")) throw e;
+          // Network-level failure reaching Supabase at all.
+          throw new Error("Couldn't start Google sign-in - the auth server didn't respond. If your Supabase project is paused, resume it in the dashboard. Otherwise use email sign-up.");
+        }
+        const w = window.open(url, "rise-google-auth", "width=500,height=650,left=" + Math.max(0, (screen.width - 500) / 2) + ",top=" + Math.max(0, (screen.height - 650) / 2));
+        if (!w) {
+          if (!inFrame) {
+            window.location.assign(url);
+            return;
+          }
+          throw new Error("Your browser blocked the sign-in window - allow popups for this site.");
+        }
+        await new Promise((resolve, reject) => {
+          let done = false;
+          const finish = (fn, a) => {
+            if (done) return;
+            done = true;
+            clearInterval(iv);
+            clearTimeout(to);
+            fn(a);
+          };
+          const iv = setInterval(() => {
+            if (user) {
+              try {
+                w.close();
+              } catch (e) {}
+              finish(resolve);
+            } else if (w.closed && !user) {
+              setTimeout(() => user ? finish(resolve) : finish(reject, new Error("Sign-in window was closed before finishing.")), 800);
+            }
+          }, 500);
+          const to = setTimeout(() => finish(reject, new Error("Sign-in timed out - please try again.")), 180000);
+        });
+      },
+      async signInEmail(email, pw) {
+        // Supabase stores addresses lowercased. Without normalising here,
+        // "Sam@x.com" fails to match an account created as "sam@x.com" and the
+        // user is told their password is wrong.
+        const addr = (email || "").trim().toLowerCase();
+        if (bridge) return call("signInEmail", {
+          email: addr,
+          password: pw
+        });
+        const d = await authPost("/auth/v1/token?grant_type=password", {
+          email: addr,
+          password: pw
+        });
+        await setSession(d);
+      },
+      async signUpEmail(email, pw, username) {
+        const addr = (email || "").trim().toLowerCase();
+        if (bridge) return call("signUpEmail", {
+          email: addr,
+          password: pw,
+          username
+        });
+        const uname = (username || "").trim();
+        const body = {
+          email: addr,
+          password: pw
+        };
+        if (uname) body.data = {
+          full_name: uname,
+          username: uname
+        };
+        const d = await authPost("/auth/v1/signup", body);
+        if (d.access_token) {
+          await setSession(d);
+          return { needsConfirmation: false };
+        }
+        // No session means the project requires email confirmation. That is a
+        // successful sign-up, so report it as a result rather than throwing —
+        // throwing rendered this success in the red error box.
+        return { needsConfirmation: true };
+      },
+
+      /* ── Organization sign-up ──────────────────────────────────────────
+         Creates the auth user with account_type in metadata, which is what
+         the database trigger reads to set profiles.role. The client asks for
+         a role; it does not assign one — and the trigger only honours
+         'organization', so a hand-crafted payload asking for 'admin' still
+         lands as a volunteer.
+
+         The organizations row is then inserted separately, because it needs
+         the new user's access token to satisfy the owner_id RLS check.
+
+         Note what is NOT sent: verification_status. The column is revoked
+         from `authenticated` at the Postgres privilege layer, so including it
+         would fail the request outright rather than silently succeed. New
+         organizations are unverified by database default, and only something
+         holding the service_role key can change that. */
+      async signUpOrganization(fields) {
+        const addr = (fields.email || "").trim().toLowerCase();
+        const d = await authPost("/auth/v1/signup", {
+          email: addr,
+          password: fields.password,
+          data: {
+            account_type: "organization",
+            full_name: (fields.contactName || "").trim()
+          }
+        });
+
+        const token = d.access_token;
+        if (!token) {
+          // Email confirmation is on. The auth user and its profile row exist,
+          // but there is no session yet to insert the organization under. The
+          // dashboard creates it on first sign-in instead.
+          return { needsConfirmation: true, pendingOrg: fields };
+        }
+        await setSession(d);
+        await createOrganization(fields, token);
+        return { needsConfirmation: false };
+      },
+
+      /* Used by the dashboard when a confirmed org signs in and has no
+         organization row yet — the confirmation-required path above. */
+      async ensureOrganization(fields) {
+        if (!session || !user) throw new Error("Sign in first.");
+        const existing = await this.myOrganization();
+        if (existing) return existing;
+        await createOrganization(fields, session.access_token);
+        return await this.myOrganization();
+      },
+
+      /* ── Opportunities (Stage 2) ───────────────────────────────────────
+         Note what none of these do: write `status`. The column is revoked
+         from `authenticated`, so including it would fail the request rather
+         than silently succeed. Drafts are created at the database default,
+         and the one transition an organization is allowed — draft to
+         submitted — goes through a SECURITY DEFINER function that can write
+         exactly that one value. Publishing is not reachable from here at all. */
+      async listOpportunities() {
+        if (!session || !user) return [];
+        const org = await this.myOrganization();
+        if (!org) return [];
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/opportunities?org_id=eq.${org.id}&select=*&order=updated_at.desc`, {
+            headers: H(session.access_token)
+          });
+          if (!r.ok) return [];
+          return await r.json();
+        } catch (e) {
+          return [];
+        }
+      },
+
+      async saveOpportunity(fields) {
+        if (!session || !user) throw new Error("Sign in first.");
+        const org = await this.myOrganization();
+        if (!org) throw new Error("No organization on this account.");
+        const row = {
+          org_id: org.id,
+          title: (fields.title || "").trim(),
+          description: (fields.description || "").trim() || null,
+          role_summary: (fields.roleSummary || "").trim() || null,
+          requirements: (fields.requirements || "").trim() || null,
+          is_remote: !!fields.isRemote,
+          location_city: (fields.city || "").trim() || null,
+          location_province: fields.province || null,
+          time_commitment: (fields.timeCommitment || "").trim() || null,
+          min_age: fields.minAge ? Number(fields.minAge) : null,
+          starts_on: fields.startsOn || null,
+          closes_on: fields.closesOn || null
+          // status intentionally absent — see the note above.
+        };
+        const editing = !!fields.id;
+        const url = editing ? `${SUPA_URL}/rest/v1/opportunities?id=eq.${fields.id}` : `${SUPA_URL}/rest/v1/opportunities`;
+        const r = await fetch(url, {
+          method: editing ? "PATCH" : "POST",
+          headers: {
+            ...H(session.access_token),
+            Prefer: "return=representation"
+          },
+          body: JSON.stringify(row)
+        });
+        if (!r.ok) {
+          const t = await r.text().catch(() => "");
+          throw new Error("Couldn't save. " + t.slice(0, 180));
+        }
+        const out = await r.json().catch(() => null);
+        return out && out[0] ? out[0] : null;
+      },
+
+      async submitOpportunity(id) {
+        return rpc("submit_opportunity", { opp_id: id });
+      },
+      async withdrawOpportunity(id) {
+        return rpc("withdraw_opportunity", { opp_id: id });
+      },
+
+      async deleteOpportunity(id) {
+        if (!session) throw new Error("Sign in first.");
+        // RLS permits DELETE only while the posting is still a draft.
+        const r = await fetch(`${SUPA_URL}/rest/v1/opportunities?id=eq.${id}`, {
+          method: "DELETE",
+          headers: H(session.access_token)
+        });
+        if (!r.ok) throw new Error("Couldn't delete that posting.");
+      },
+
+      /* ── Admin (Stage 2: read-only) ────────────────────────────────────
+         An admin is still `authenticated`, so the column revokes apply to
+         them too — this queue can be read but nothing here can verify or
+         publish. Those writes need the service_role key and arrive in
+         Stage 3 through a server endpoint. */
+      async adminQueue() {
+        if (!session || !user || user.role !== "admin") return null;
+        const get = async path => {
+          try {
+            const r = await fetch(SUPA_URL + path, { headers: H(session.access_token) });
+            return r.ok ? await r.json() : [];
+          } catch (e) {
+            return [];
+          }
+        };
+        const [orgs, opps] = await Promise.all([
+          get("/rest/v1/organizations?select=*&order=created_at.desc"),
+          get("/rest/v1/opportunities?select=*&order=updated_at.desc")
+        ]);
+        return { orgs, opps };
+      },
+
+      /* ── Admin actions (Stage 3) ───────────────────────────────────────
+         Everything here goes through the Worker, which holds the only
+         service_role key in the system. The browser cannot verify or publish
+         directly — those columns are revoked from `authenticated`, and an
+         admin is still `authenticated`. The Worker re-verifies the token with
+         Supabase and re-fetches the role on every single request, so this
+         method being callable proves nothing on its own. */
+      async adminAction(action, payload) {
+        const r = await fetch("/api/admin", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(session ? { Authorization: "Bearer " + session.access_token } : {})
+          },
+          body: JSON.stringify({ action, ...(payload || {}) })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || "That action didn't complete.");
+        return d;
+      },
+
+      /* The organization's own screening attestation — point (d) of the bar.
+         Legitimately written by the organization because it is their
+         statement to make. It is evidence for the review, not a grant: the
+         verification columns stay revoked either way. */
+      async attestScreening(statement) {
+        if (!session || !user) throw new Error("Sign in first.");
+        const org = await this.myOrganization();
+        if (!org) throw new Error("No organization on this account.");
+        const r = await fetch(`${SUPA_URL}/rest/v1/organizations?id=eq.${org.id}`, {
+          method: "PATCH",
+          headers: H(session.access_token),
+          body: JSON.stringify({
+            screening_attested: true,
+            screening_statement: (statement || "").slice(0, 2000)
+          })
+        });
+        if (!r.ok) throw new Error("Couldn't record your attestation.");
+      },
+
+      /* ── Applications (Stage 4) ────────────────────────────────────────
+         Submitting goes through submit_application(), which is the only path
+         that creates a row. The function re-checks that the opportunity is in
+         public_opportunities, so applying to an unpublished posting or an
+         unverified organization fails in the database rather than relying on
+         this client having rendered the right button.
+
+         Nothing here writes `status`. That column is revoked from
+         `authenticated`, so including it would fail the request outright. */
+      async submitApplication(fields) {
+        if (!session || !user) throw new Error("Sign in to apply.");
+        return rpc("submit_application", {
+          p_opportunity_id: fields.opportunityId,
+          p_availability: fields.availability,
+          p_experience: fields.experience || null,
+          p_motivation: fields.motivation || null,
+          p_prior: fields.prior || null,
+          p_accessibility: !!fields.accessibility,
+          p_skills: fields.skills && fields.skills.length ? fields.skills : null
+        });
+      },
+
+      async withdrawApplication(id) {
+        return rpc("withdraw_application", { p_id: id });
+      },
+
+      /* A volunteer's own applications. RLS restricts this to their rows —
+         there is no policy on this table that grants anyone else a read, so a
+         hand-written query cannot reach another student's application. */
+      async myApplications() {
+        if (!session || !user) return [];
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/applications?volunteer_id=eq.${user.uid}&select=*&order=created_at.desc`, {
+            headers: H(session.access_token)
+          });
+          if (!r.ok) return [];
+          return await r.json();
+        } catch (e) {
+          return [];
+        }
+      },
+
+      /* Published postings from verified organizations, for the volunteer
+         results. Reads the view, never the base table — the "published AND
+         verified" condition is part of the view's definition, so this cannot
+         return anything unpublished even if this code were wrong. */
+      async publishedOpportunities(opts = {}) {
+        const params = ["select=*", "order=published_at.desc", "limit=" + (opts.limit || 20)];
+        if (opts.city) params.push(`or=(location_city.ilike.*${encodeURIComponent(opts.city)}*,is_remote.is.true)`);
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/public_opportunities?${params.join("&")}`, {
+            headers: H(session ? session.access_token : null)
+          });
+          if (!r.ok) return [];
+          return await r.json();
+        } catch (e) {
+          return [];
+        }
+      },
+
+      async myOrganization() {
+        if (!session || !user) return null;
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/organizations?owner_id=eq.${user.uid}&select=*`, {
+            headers: H(session.access_token)
+          });
+          if (!r.ok) return null;
+          const rows = await r.json();
+          return rows && rows[0] ? rows[0] : null;
+        } catch (e) {
+          return null;
+        }
+      },
+
+      async signOut() {
+        if (bridge) return call("signOut");
+        await setSession(null);
+      },
+      async cloudGet(key) {
+        if (bridge) {
+          try {
+            return await call("cloudGet", {
+              key
+            });
+          } catch (e) {
+            return null;
+          }
+        }
+        if (!user || !session) return null;
+        try {
+          const r = await fetch(`${SUPA_URL}/rest/v1/user_data?user_id=eq.${user.uid}&storage_key=eq.${encodeURIComponent(key)}&select=value`, {
+            headers: H(session.access_token)
+          });
+          if (!r.ok) return null;
+          const rows = await r.json();
+          return rows[0]?.value ?? null;
+        } catch (e) {
+          return null;
+        }
+      },
+      async cloudSet(key, value) {
+        if (bridge) {
+          try {
+            await call("cloudSet", {
+              key,
+              value
+            });
+          } catch (e) {}
+          return;
+        }
+        if (!user || !session) return;
+        try {
+          await fetch(`${SUPA_URL}/rest/v1/user_data?on_conflict=user_id,storage_key`, {
+            method: "POST",
+            headers: {
+              ...H(session.access_token),
+              Prefer: "resolution=merge-duplicates"
+            },
+            body: JSON.stringify({
+              user_id: user.uid,
+              storage_key: key,
+              value
+            })
+          });
+        } catch (e) {}
+      }
+    };
+  }();
+}
+
+/* Inline lucide icons (no CDN dependency) */
+const mkIcon = inner => ({
+  size = 24,
+  color = "currentColor",
+  strokeWidth = 2,
+  className,
+  style
+}) =>
+/*#__PURE__*/
+/*#__PURE__*/
+React.createElement("svg", {
+  width: size,
+  height: size,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: color,
+  strokeWidth: strokeWidth,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  className: className,
+  style: style,
+  dangerouslySetInnerHTML: {
+    __html: inner
+  }
+});
+const Sparkles = mkIcon("<path d=\"M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z\"/><path d=\"M20 2v4\"/><path d=\"M22 4h-4\"/><circle cx=\"4\" cy=\"20\" r=\"2\"/>");
+const ArrowRight = mkIcon("<path d=\"M5 12h14\"/><path d=\"m12 5 7 7-7 7\"/>");
+const GraduationCap = mkIcon("<path d=\"M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z\"/><path d=\"M22 10v6\"/><path d=\"M6 12.5V16a6 3 0 0 0 12 0v-3.5\"/>");
+const Clock = mkIcon("<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 6v6l4 2\"/>");
+const MapPin = mkIcon("<path d=\"M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0\"/><circle cx=\"12\" cy=\"10\" r=\"3\"/>");
+const ExternalLink = mkIcon("<path d=\"M15 3h6v6\"/><path d=\"M10 14 21 3\"/><path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"/>");
+const Check = mkIcon("<path d=\"M20 6 9 17l-5-5\"/>");
+const Plus = mkIcon("<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>");
+const Download = mkIcon("<path d=\"M12 15V3\"/><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><path d=\"m7 10 5 5 5-5\"/>");
+const X = mkIcon("<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>");
+const ChevronRight = mkIcon("<path d=\"m9 18 6-6-6-6\"/>");
+const ChevronLeft = mkIcon("<path d=\"m15 18-6-6 6-6\"/>");
+const Trash2 = mkIcon("<path d=\"M10 11v6\"/><path d=\"M14 11v6\"/><path d=\"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6\"/><path d=\"M3 6h18\"/><path d=\"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2\"/>");
+const Calendar = mkIcon("<path d=\"M8 2v4\"/><path d=\"M16 2v4\"/><rect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\"/><path d=\"M3 10h18\"/>");
+const CheckCircle = mkIcon("<path d=\"M21.801 10A10 10 0 1 1 17 3.335\"/><path d=\"m9 11 3 3L22 4\"/>");
+const Music = mkIcon("<path d=\"M9 18V5l12-2v13\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><circle cx=\"18\" cy=\"16\" r=\"3\"/>");
+const Leaf = mkIcon("<path d=\"M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z\"/><path d=\"M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12\"/>");
+const BookOpen = mkIcon("<path d=\"M12 7v14\"/><path d=\"M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z\"/>");
+const Activity = mkIcon("<path d=\"M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2\"/>");
+const TrendingUp = mkIcon("<path d=\"M16 7h6v6\"/><path d=\"m22 7-8.5 8.5-5-5L2 17\"/>");
+const Smile = mkIcon("<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M8 14s1.5 2 4 2 4-2 4-2\"/><line x1=\"9\" x2=\"9.01\" y1=\"9\" y2=\"9\"/><line x1=\"15\" x2=\"15.01\" y1=\"9\" y2=\"9\"/>");
+const User = mkIcon("<path d=\"M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2\"/><circle cx=\"12\" cy=\"7\" r=\"4\"/>");
+const Search = mkIcon("<path d=\"m21 21-4.34-4.34\"/><circle cx=\"11\" cy=\"11\" r=\"8\"/>");
+const AlertCircle = mkIcon("<circle cx=\"12\" cy=\"12\" r=\"10\"/><line x1=\"12\" x2=\"12\" y1=\"8\" y2=\"12\"/><line x1=\"12\" x2=\"12.01\" y1=\"16\" y2=\"16\"/>");
+const RefreshCw = mkIcon("<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/>");
+const Wifi = mkIcon("<path d=\"M12 20h.01\"/><path d=\"M2 8.82a15 15 0 0 1 20 0\"/><path d=\"M5 12.859a10 10 0 0 1 14 0\"/><path d=\"M8.5 16.429a5 5 0 0 1 7 0\"/>");
+const WifiOff = mkIcon("<path d=\"M12 20h.01\"/><path d=\"M8.5 16.429a5 5 0 0 1 7 0\"/><path d=\"M5 12.859a10 10 0 0 1 5.17-2.69\"/><path d=\"M19 12.859a10 10 0 0 0-2.007-1.523\"/><path d=\"M2 8.82a15 15 0 0 1 4.177-2.643\"/><path d=\"M22 8.82a15 15 0 0 0-11.288-3.764\"/><path d=\"m2 2 20 20\"/>");
+const Settings = mkIcon("<path d=\"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>");
+const Mail = mkIcon("<rect width=\"20\" height=\"16\" x=\"2\" y=\"4\" rx=\"2\"/><path d=\"m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7\"/>");
+const LogOut = mkIcon("<path d=\"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4\"/><polyline points=\"16 17 21 12 16 7\"/><line x1=\"21\" x2=\"9\" y1=\"12\" y2=\"12\"/>");
+const Copy = mkIcon("<rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\" ry=\"2\"/><path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\"/>");
+const Award = mkIcon("<circle cx=\"12\" cy=\"8\" r=\"6\"/><path d=\"M15.477 12.89 17 22l-5-3-5 3 1.523-9.11\"/>");
+const Shield = mkIcon("<path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\"/>");
+const Zap = mkIcon("<path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z\"/>");
+const Star = mkIcon("<path d=\"M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z\"/>");
+const Loader = mkIcon("<path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/>");
+const Heart = mkIcon("<path d=\"M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z\"/>");
+const Quote = mkIcon("<path d=\"M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v1a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z\"/><path d=\"M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v1a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z\"/>");
+const Flame = mkIcon("<path d=\"M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z\"/>");
+
+/* ═══════════════════════════════════════
+   DESIGN SYSTEM
+═══════════════════════════════════════ */
+const Styles = () =>
+/*#__PURE__*/
+/*#__PURE__*/
+React.createElement("style", null, `
+    /* The font @import that used to live here moved to a <link> in <head> —
+       see the note there. Keeping it here delayed first paint by ~900ms. */
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --canvas:       #F4F1EB;
+      --surface:      #FFFFFF;
+      --surface-warm: #FAF7F2;
+      --surface-up:   #F7F3EC;
+
+      --ink:   #16110A;
+      --ink-2: #4A3D31;
+      --ink-3: #857666;
+      --ink-4: #BEB0A4;
+      --ink-5: #E0D8CE;
+      --ink-6: #EDE7E0;
+
+      --fire:       #D6560C;
+      --fire-mid:   #E8681A;
+      --fire-light: #F97316;
+      --ember:      #FEF0E6;
+      --ember-2:    #FDE8D5;
+      --ember-bd:   rgba(214,86,12,.16);
+
+      --success:    #1A6B3C;
+      --success-bg: rgba(26,107,60,.07);
+      --danger:     #C42828;
+      --danger-bg:  rgba(196,40,40,.06);
+
+      --nav-bg: rgba(244,241,235,.94);
+      --nav-bd: rgba(22,17,10,.07);
+
+      --sh-sm:   0 1px 3px rgba(22,17,10,.07), 0 1px 2px rgba(22,17,10,.04);
+      --sh-md:   0 4px 16px rgba(22,17,10,.09), 0 2px 6px rgba(22,17,10,.05);
+      --sh-fire: 0 4px 20px rgba(214,86,12,.26);
+    }
+
+    [data-theme="dark"] {
+      --canvas:       #0C0906;
+      --surface:      #181410;
+      --surface-warm: #221A12;
+      --surface-up:   #2D2218;
+      --ink:          #F5EDE3;
+      --ink-2:        #DBC8B6;
+      --ink-3:        #B8A08A;
+      --ink-4:        #8A7562;
+      --ink-5:        #4D3F32;
+      --ink-6:        #2E251B;
+      --nav-bg:       rgba(12,9,6,.96);
+      --nav-bd:       rgba(245,237,227,.10);
+      --ember:        rgba(255,140,77,.12);
+      --ember-2:      rgba(255,140,77,.20);
+      --ember-bd:     rgba(255,140,77,.32);
+      --sh-sm:        0 1px 2px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+      --sh-md:        0 8px 24px rgba(0,0,0,.60), 0 3px 8px rgba(0,0,0,.45);
+    }
+
+    /* The ink card inverts the page palette so it stays readable in every theme */
+    .card-ink { background: var(--ink); color: var(--canvas); }
+
+    [data-contrast="high"] {
+      --ink: #0a0a0a; --ink-2: #141414; --ink-3: #2a2a2a; --ink-4: #444; --ink-5: #777; --ink-6: #aaa;
+      --canvas: #ffffff; --surface: #ffffff; --surface-warm: #fafafa; --surface-up: #f2f2f2;
+      --fire: #a03000; --fire-mid: #b53b00; --fire-light: #d6560c;
+      --nav-bd: rgba(0,0,0,.25);
+    }
+    [data-contrast="high"][data-theme="dark"] {
+      --ink: #ffffff; --ink-2: #f2f2f2; --ink-3: #d9d9d9; --ink-4: #b3b3b3; --ink-5: #666; --ink-6: #333;
+      --canvas: #050505; --surface: #050505; --surface-warm: #0a0a0a; --surface-up: #111;
+      --fire: #ff9f6b; --fire-mid: #ff8c4d; --fire-light: #ffb899;
+      --nav-bd: rgba(255,255,255,.25);
+    }
+    [data-contrast="high"] .card,
+    [data-contrast="high"] .result-card,
+    [data-contrast="high"] .choice,
+    [data-contrast="high"] .stat-card,
+    [data-contrast="high"] input,
+    [data-contrast="high"] select,
+    [data-contrast="high"] textarea { border-width: 2px !important; }
+    [data-contrast="high"] .card-ink { background: #000 !important; color: #fff !important; }
+    [data-contrast="high"][data-theme="dark"] .card-ink { background: #fff !important; color: #000 !important; }
+
+    /* Form controls - proper serif-token styling in both themes */
+    .input {
+      width: 100%; box-sizing: border-box;
+      padding: 12px 14px;
+      background: var(--surface); color: var(--ink);
+      border: 1.5px solid var(--ink-5); border-radius: 10px;
+      font-family: 'DM Sans', sans-serif; font-size: 14px;
+      outline: none; transition: border-color .15s, box-shadow .15s;
+      color-scheme: light; /* stops the browser forcing dark UA widgets */
+    }
+    [data-theme="dark"] .input { color-scheme: dark; }
+    .input::placeholder { color: var(--ink-4); }
+    .input:focus { border-color: var(--fire); box-shadow: 0 0 0 3px rgba(214,86,12,.12); }
+    .input:-webkit-autofill { -webkit-box-shadow: 0 0 0 40px var(--surface) inset; -webkit-text-fill-color: var(--ink); }
+
+    /* Text size - zoom scales the entire UI (works with px-based styles) */
+    [data-size="sm"] { zoom: .9; }
+    [data-size="md"] { zoom: 1; }
+    [data-size="lg"] { zoom: 1.15; }
+    [data-size="xl"] { zoom: 1.3; }
+
+    /* Easier reading - generous spacing for dyslexia & low-vision comfort */
+    [data-read="easy"] p, [data-read="easy"] li, [data-read="easy"] label, [data-read="easy"] span { letter-spacing: .02em; word-spacing: .08em; }
+    [data-read="easy"] p, [data-read="easy"] li { line-height: 2 !important; }
+
+    /* Always-underlined links for visibility */
+    [data-links="underline"] a { text-decoration: underline !important; text-underline-offset: 3px; }
+
+    /* Stronger keyboard focus in high contrast */
+    [data-contrast="high"] button:focus-visible, [data-contrast="high"] a:focus-visible, [data-contrast="high"] input:focus-visible, [data-contrast="high"] select:focus-visible, [data-contrast="high"] textarea:focus-visible { outline: 3px solid var(--fire) !important; outline-offset: 3px; }
+
+    /* Skip link - appears on keyboard focus */
+    .skip-link { position: fixed; top: -48px; left: 12px; z-index: 999; background: var(--fire); color: #fff; padding: 10px 16px; border-radius: 10px; font-weight: 700; font-size: 13px; text-decoration: none; transition: top .15s; }
+    .skip-link:focus { top: 12px; }
+
+    /* Subtle press feedback (UI refinement) */
+    button:active { transform: scale(.985); }
+    .rm button:active { transform: none; }
+
+    .rm *, .rm *::before, .rm *::after { animation:none !important; transition:none !important; }
+    @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
+
+    /* ── The hidden layer ──
+       Styles for things most visitors will never see. Every one of them
+       is inert until a key sequence builds it, and the blanket
+       reduced-motion rule directly above already stops all of it moving
+       for anyone who asked their system for stillness, so none of these
+       rules needs to repeat that guard. */
+
+    .rise-ember-layer {
+      position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+      overflow: hidden;
+    }
+    .rise-ember {
+      position: absolute; bottom: -12px;
+      width: var(--sz, 5px); height: var(--sz, 5px);
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #FFD9A8, var(--fire-light, #F97316) 55%, rgba(214,86,12,0) 72%);
+      animation: riseEmber 2.6s cubic-bezier(.25,.6,.35,1) forwards;
+      will-change: transform, opacity;
+    }
+    @keyframes riseEmber {
+      0%   { transform: translate3d(0,0,0) scale(.5); opacity: 0; }
+      12%  { opacity: 1; }
+      70%  { opacity: .85; }
+      100% { transform: translate3d(var(--dx,0), -102vh, 0) scale(1.15); opacity: 0; }
+    }
+
+    /* The Konami reward: the page itself warms for a moment. Inset so it
+       never adds a scrollbar, which a box-shadow on body otherwise can. */
+    .rise-glow::after {
+      content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9997;
+      box-shadow: inset 0 0 140px 20px rgba(214,86,12,.28);
+      animation: riseGlow 2.6s ease-out forwards;
+    }
+    @keyframes riseGlow { 0%,100% { opacity: 0; } 18%,62% { opacity: 1; } }
+
+    .rise-piano {
+      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+      z-index: 9999; display: flex; flex-direction: column; align-items: center; gap: 7px;
+      animation: fadeUp .34s cubic-bezier(.2,.7,.3,1) both;
+    }
+    .rise-piano-keys {
+      display: flex; gap: 3px; padding: 9px;
+      background: var(--surface, #fff);
+      border: 1px solid var(--ink-5, rgba(0,0,0,.08));
+      border-radius: 13px;
+      box-shadow: 0 16px 44px rgba(0,0,0,.2);
+      max-width: 94vw;
+    }
+    .rise-key {
+      width: 40px; height: 92px; flex: 0 1 40px;
+      border: 1px solid var(--ink-5, rgba(0,0,0,.1));
+      border-radius: 4px 4px 7px 7px;
+      background: linear-gradient(180deg, #fff, #f2efe9);
+      color: #b6ada2; cursor: pointer;
+      font: 600 10px/1 ui-monospace, monospace;
+      display: flex; align-items: flex-end; justify-content: center; padding-bottom: 9px;
+      transition: transform .07s ease, background .12s ease, color .12s ease;
+    }
+    .rise-key:hover { background: linear-gradient(180deg, #fff, #ffe9d8); }
+    .rise-key.hit {
+      background: linear-gradient(180deg, #FFD9A8, var(--fire-light, #F97316));
+      color: #fff; transform: translateY(3px) scaleY(.97);
+    }
+    .rise-piano-hint {
+      font: 500 10.5px/1 ui-monospace, monospace;
+      color: var(--muted, #8a8178); letter-spacing: .04em; opacity: .75;
+    }
+    @media (max-width: 420px) { .rise-key { width: 32px; height: 76px; flex-basis: 32px; } }
+
+    /* ── Refinements ──
+       Spring easing rather than linear on the two interactions that
+       happen most. The distances are unchanged; only the curve moved,
+       so nothing shifts position and nothing new appears. */
+    .press { transition: transform .13s cubic-bezier(.34,1.56,.64,1), box-shadow .15s ease; }
+    a[href] img[alt="RISE logo"], img[alt="RISE logo"] {
+      transition: transform .4s cubic-bezier(.34,1.56,.64,1);
+    }
+    header img[alt="RISE logo"]:hover { transform: translateY(-1.5px) rotate(-4deg); }
+
+    button:focus-visible, a:focus-visible, select:focus-visible,
+    input:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--fire); outline-offset: 2px; border-radius: 4px;
+    }
+
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: 'DM Sans', -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.6;
+    }
+    ::selection { background: rgba(214,86,12,.15); }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: var(--ink-5); border-radius: 2px; }
+
+    /* ── Keyframes ─── */
+    @keyframes fadeUp  { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes shimmer { 0%{background-position:-700px 0} 100%{background-position:700px 0} }
+    @keyframes spin    { to{transform:rotate(360deg)} }
+    @keyframes confFall { to { transform: translate(var(--drift,0), 105vh) rotate(720deg); opacity: 0; } }
+    @keyframes pop3d { 0%{transform:scale(.7);opacity:0} 60%{transform:scale(1.06)} 100%{transform:scale(1);opacity:1} }
+    @keyframes badgePulse { 0%{transform:scale(.4);opacity:0} 55%{transform:scale(1.15)} 100%{transform:scale(1);opacity:1} }
+    @keyframes countUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .press { transition: transform .08s ease, box-shadow .15s ease; }
+    .press:active { transform: scale(.96); }
+    .badge-pop { animation: badgePulse .5s cubic-bezier(.34,1.56,.64,1) both; }
+    .view-fade { animation: fadeUp .4s cubic-bezier(.2,.7,.3,1) both; }
+    @media (prefers-reduced-motion: reduce) {
+      .press:active { transform: none; }
+      .badge-pop, .view-fade, .pop3d { animation: none !important; }
+    }
+    @keyframes pulse   { 0%,100%{opacity:1} 50%{opacity:.25} }
+    @keyframes barFill { 0%{width:2%} 25%{width:35%} 60%{width:65%} 85%{width:84%} 100%{width:91%} }
+    @keyframes popIn   { from{opacity:0;transform:scale(.97) translateY(8px)} to{opacity:1;transform:scale(1) translateY(0)} }
+    @keyframes marquee { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+
+    .fu  { animation: fadeUp .4s ease-out forwards; }
+    .fu1 { animation: fadeUp .4s .08s ease-out both; }
+    .fu2 { animation: fadeUp .4s .17s ease-out both; }
+    .fu3 { animation: fadeUp .4s .27s ease-out both; }
+    .fu4 { animation: fadeUp .4s .38s ease-out both; }
+    .pop { animation: popIn .36s cubic-bezier(.2,.9,.3,1.1) both; }
+    .spin  { animation: spin 1s linear infinite; }
+    .blink { animation: pulse 2s ease-in-out infinite; }
+    .shimmer {
+      background: linear-gradient(90deg, var(--ink-5) 25%, var(--surface-up) 50%, var(--ink-5) 75%);
+      background-size: 700px 100%;
+      animation: shimmer 1.6s infinite;
+      border-radius: 4px;
+    }
+
+    /* ── Typography ─── */
+    .serif { font-family: 'DM Serif Display', Georgia, serif; }
+
+    /* ── Surfaces ─── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--ink-5);
+      border-radius: 16px;
+    }
+    .card-lift {
+      background: var(--surface);
+      border: 1px solid var(--ink-5);
+      border-radius: 16px;
+      box-shadow: var(--sh-sm);
+      transition: box-shadow .22s, border-color .2s, transform .2s;
+    }
+    .card-lift:hover {
+      box-shadow: var(--sh-md);
+      border-color: var(--ink-4);
+      transform: translateY(-2px);
+    }
+    .card-tinted {
+      background: var(--ember);
+      border: 1px solid var(--ember-bd);
+      border-radius: 16px;
+    }
+    .card-ink {
+      background: var(--ink);
+      border-radius: 16px;
+    }
+    .card-ghost {
+      background: transparent;
+      border: 1.5px dashed var(--ink-5);
+      border-radius: 16px;
+    }
+
+    /* ── Buttons ─── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      font-family: 'DM Sans', sans-serif; font-weight: 600; cursor: pointer;
+      border: none; border-radius: 10px; transition: color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s; letter-spacing: -.01em;
+    }
+    .btn:disabled { opacity: .4; pointer-events: none; }
+    .btn:active:not(:disabled) { transform: scale(.97); }
+    .rm .btn:active { transform: none; }
+    .btn-fire { background: var(--fire); color: #FFF; box-shadow: var(--sh-fire); }
+    .btn-fire:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(214,86,12,.35); }
+    .rm .btn-fire:hover { transform: none; }
+    .btn-fire:hover { background: var(--fire-mid); box-shadow: 0 6px 28px rgba(214,86,12,.34); transform: translateY(-1px); }
+    .btn-fire:active { transform: none; }
+    .btn-ghost { background: transparent; color: var(--ink-2); border: 1px solid var(--ink-5); }
+    .btn-ghost:hover { border-color: var(--ink-3); color: var(--ink); background: var(--surface-up); }
+    .btn-ink { background: var(--ink); color: var(--canvas); }
+    .btn-ink:hover { opacity: .84; transform: translateY(-1px); }
+
+    /* ── Form inputs ─── */
+    .field {
+      width: 100%; background: var(--surface); border: 1px solid var(--ink-5);
+      border-radius: 10px; padding: 12px 14px; font-size: 14px;
+      font-family: 'DM Sans', sans-serif; color: var(--ink); outline: none;
+      transition: border-color .18s, box-shadow .18s; appearance: none;
+    }
+    .field:focus { border-color: var(--fire); box-shadow: 0 0 0 3px rgba(214,86,12,.09); }
+    .field::placeholder { color: var(--ink-4); }
+    select.field {
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23857666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center; padding-right: 34px;
+    }
+    textarea.field { resize: vertical; line-height: 1.7; }
+
+    /* ── Choice buttons ─── */
+    .choice {
+      width: 100%; text-align: left; cursor: pointer; background: var(--surface);
+      border: 1px solid var(--ink-5); border-radius: 12px; padding: 14px 16px;
+      transition: color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s; display: flex; align-items: flex-start; gap: 12px;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .choice:hover { border-color: var(--ink-4); background: var(--surface-up); transform: translateY(-1px); }
+    .choice:active { transform: translateY(0); }
+    .choice.chosen { border-color: var(--fire); background: var(--ember); box-shadow: 0 0 0 3px rgba(214,86,12,.09); }
+    .choice.chosen:hover { transform: translateY(-1px); }
+
+    /* ── Nav links ─── */
+    .nav-link {
+      background: none; border: none; cursor: pointer; font-family: 'DM Sans', sans-serif;
+      font-size: 14px; font-weight: 500; color: var(--ink-3); padding: 4px 0; transition: color .15s;
+    }
+    .nav-link:hover { color: var(--ink); }
+    .nav-link.active { color: var(--fire); font-weight: 600; }
+
+    /* ── Badges ─── */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+      border-radius: 6px; font-size: 11px; font-weight: 600; letter-spacing: .02em;
+    }
+    .badge-fire    { background: var(--ember);      color: var(--fire);    border: 1px solid var(--ember-bd); }
+    .badge-green   { background: var(--success-bg); color: var(--success); border: 1px solid rgba(26,107,60,.18); }
+    .badge-neutral { background: var(--surface-up); color: var(--ink-3);   border: 1px solid var(--ink-5); }
+    .badge-red     { background: var(--danger-bg);  color: var(--danger);  border: 1px solid rgba(196,40,40,.18); }
+
+    /* ── Progress ring ─── */
+    .prog-ring { transition: stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1); }
+
+    /* ── Step dots ─── */
+    .step-dot { height: 4px; border-radius: 2px; transition: all .3s cubic-bezier(.4,0,.2,1); }
+    .step-dot.done { background: var(--fire); opacity: .45; }
+    .step-dot.cur  { background: var(--fire); }
+    .step-dot.pend { background: var(--ink-5); }
+
+    /* ── Toggle ─── */
+    .tog { position: relative; cursor: pointer; border-radius: 100px; transition: background .2s; flex-shrink: 0; border: none; }
+    .tog-dot { position: absolute; background: #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,.18); transition: left .2s cubic-bezier(.34,1.2,.64,1); }
+    [data-contrast="high"] .tog { outline: 2px solid transparent; }
+    [data-contrast="high"] .tog[aria-checked="true"] { outline-color: var(--ink); }
+    [data-contrast="high"][data-theme="dark"] .tog[aria-checked="true"] { outline-color: var(--ink); }
+
+    /* ── Settings row ─── */
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--ink-5); }
+    .setting-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+    /* ── Bar fill ─── */
+    .bar-fill { animation: barFill 20s cubic-bezier(.25,.1,.25,1) forwards; }
+
+    /* ── Result card ─── */
+    .result-card {
+      background: var(--surface); border: 1px solid var(--ink-5); border-radius: 16px;
+      transition: box-shadow .22s, border-color .2s;
+    }
+    .result-card:hover { box-shadow: var(--sh-md); border-color: var(--ink-4); transform: translateY(-2px); }
+
+    /* ── Marquee ─── */
+    .marquee-inner { display: flex; width: max-content; animation: marquee 26s linear infinite; will-change: transform; }
+    .marquee-wrap:hover .marquee-inner,
+    .marquee-wrap:focus-within .marquee-inner { animation-play-state: paused; }
+    @media (prefers-reduced-motion: reduce) { .marquee-inner { animation: none; } }
+
+    /* ── Performance ─── */
+    .card, .result-card, .stat-card, .choice { contain: layout paint; }
+    .fu, .fu1, .fu2, .fu3, .fu4, .pop { will-change: transform, opacity; }
+
+    /* ── Responsive ─── */
+    @media (max-width: 900px) {
+      .hero-grid  { grid-template-columns: 1fr !important; }
+      .steps-grid { grid-template-columns: 1fr !important; }
+      .story-grid { grid-template-columns: 1fr !important; }
+    }
+    @media (max-width: 640px) {
+      .hide-sm    { display: none !important; }
+      .tal-grid   { grid-template-columns: 1fr !important; }
+      .prog-grid  { grid-template-columns: 1fr !important; }
+      .stat-row   { grid-template-columns: 1fr 1fr !important; }
+      .hours-top  { grid-template-columns: 1fr !important; }
+      .hours-stats{ grid-template-columns: 1fr 1fr !important; }
+      .founders-grid { grid-template-columns: 1fr !important; }
+      .about-2col { grid-template-columns: 1fr !important; }
+      .about-head { grid-template-columns: 1fr !important; gap: 12px !important; align-items: start !important; }
+      /* Phones: the seal stays, because it is the thing being explained. It
+         shrinks and the heading block wraps under it rather than being
+         squeezed into a narrow column beside it. */
+      .org-invite { padding: 28px 22px !important; }
+      .org-invite-head { flex-direction: column; align-items: flex-start !important; gap: 14px !important; }
+      .org-seal svg { width: 58px; height: 58px; }
+      .org-stats { grid-template-columns: 1fr !important; }
+    }
+
+    /* Nav: on narrow screens let the links scroll horizontally instead of
+       overflowing the viewport, so all tabs stay reachable */
+    @media (max-width: 760px) {
+      .nav-links {
+        flex: 1 1 auto; min-width: 0; justify-content: flex-start;
+        gap: 16px !important; overflow-x: auto; -webkit-overflow-scrolling: touch;
+        scrollbar-width: none; margin: 0 8px;
+        scroll-snap-type: x proximity;
+      }
+      .nav-links::-webkit-scrollbar { display: none; }
+      .nav-link { flex: 0 0 auto; white-space: nowrap; scroll-snap-align: start; }
+
+      /* Fade the trailing edge so a half-visible label reads as "scroll for
+         more" rather than as a truncation bug. Applied only when JS has
+         measured real hidden content (see Nav), so a strip that fits is never
+         faded for no reason. */
+      .nav-links[data-overflowing="true"] {
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
+                mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
+      }
+    }
+
+    /* The matcher's talent grid had a hardcoded two columns and no class, so
+       the .tal-grid responsive rule (which belongs to the Home page grid)
+       never applied to it. At 375px that wrapped every label onto two lines
+       — "Music & / Performance". One column below 480px. */
+    @media (max-width: 480px) {
+      .match-tal-grid { grid-template-columns: 1fr !important; }
+    }
+
+    /* Desktop: the matcher is a single 640px column, which on a 1080p screen
+       used about a third of the width and left the wizard floating in empty
+       canvas. Widen it in steps as the viewport grows — enough to fill the
+       space and let the two-column option grids breathe, but still a bounded
+       measure rather than a full-bleed form, which would be worse to read. */
+    @media (min-width: 1024px) {
+      .matcher-wrap { max-width: 820px !important; }
+    }
+    @media (min-width: 1500px) {
+      .matcher-wrap { max-width: 900px !important; padding-top: 56px !important; }
+    }
+
+    /* Phones: the logo and the auth buttons are both fixed-width, so on a
+       375px screen they left the link strip 22px wide — the entire primary
+       navigation reduced to a sliver you could neither read nor scroll.
+       Give the links their own full-width row underneath instead. */
+    @media (max-width: 620px) {
+      .nav-bar {
+        flex-wrap: wrap;
+        height: auto !important;
+        padding: 10px 16px 0 !important;
+        row-gap: 2px;
+      }
+      .nav-bar > :first-child { order: 1; }          /* logo */
+      .nav-bar > :last-child  { order: 2; margin-left: auto; }  /* auth buttons */
+      .nav-links {
+        order: 3;
+        flex: 1 0 100% !important;
+        margin: 2px -16px 0 !important;
+        padding: 8px 16px 10px !important;
+      }
+
+      /* Touch targets. Measured on a 375px screen these were 27–30px tall —
+         under the 44px that thumbs actually need, and this is a product for
+         14–18 year olds who will mostly be on a phone.
+
+         The nav links get their hit area extended by an overlay rather than by
+         padding, so the row keeps its exact visual height and spacing while
+         becoming comfortably tappable. The auth buttons have room to grow
+         properly, so those just get a min-height. */
+      .nav-link { position: relative; }
+      .nav-link::after {
+        content: "";
+        position: absolute;
+        left: 0; right: 0; top: 50%;
+        transform: translateY(-50%);
+        height: 44px;
+      }
+      .nav-bar > :last-child button {
+        min-height: 40px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+    }
+
+    /* ── Focus: visible for keyboard users, invisible for mouse users ──
+       Several controls set outline:none for looks, which left keyboard
+       navigation with no indication of position at all. :focus-visible
+       restores it only for keyboard/AT focus. */
+    :where(button, a, select, textarea, [tabindex]):focus-visible,
+    .input:focus-visible {
+      outline: 2px solid var(--fire);
+      outline-offset: 2px;
+      border-radius: 8px;
+    }
+
+    /* Respect users who ask for less motion. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  `);
+
+/* ═══════════════════════════════════════
+   DATA - unchanged
+═══════════════════════════════════════ */
+const LOC_GROUPS = [{
+  prov: "Ontario",
+  locs: [{
+    id: "toronto",
+    label: "Toronto - Downtown & Central",
+    short: "Toronto"
+  }, {
+    id: "scarborough",
+    label: "Toronto - Scarborough / East York",
+    short: "Scarborough"
+  }, {
+    id: "north-york",
+    label: "Toronto - North York / Etobicoke",
+    short: "North York"
+  }, {
+    id: "mississauga",
+    label: "Mississauga",
+    short: "Mississauga"
+  }, {
+    id: "brampton",
+    label: "Brampton",
+    short: "Brampton"
+  }, {
+    id: "york-region",
+    label: "Vaughan / Markham / Richmond Hill",
+    short: "York Region"
+  }, {
+    id: "hamilton",
+    label: "Hamilton",
+    short: "Hamilton"
+  }, {
+    id: "oakville",
+    label: "Oakville",
+    short: "Oakville"
+  }, {
+    id: "burlington",
+    label: "Burlington",
+    short: "Burlington"
+  }, {
+    id: "milton",
+    label: "Milton / Halton Hills",
+    short: "Milton"
+  }, {
+    id: "newmarket",
+    label: "Newmarket / Aurora",
+    short: "Newmarket"
+  }, {
+    id: "brantford",
+    label: "Brantford / Brant County",
+    short: "Brantford"
+  }, {
+    id: "cambridge",
+    label: "Cambridge",
+    short: "Cambridge"
+  }, {
+    id: "guelph",
+    label: "Guelph",
+    short: "Guelph"
+  }, {
+    id: "kitchener",
+    label: "Kitchener / Waterloo",
+    short: "Kitchener-Waterloo"
+  }, {
+    id: "ottawa",
+    label: "Ottawa",
+    short: "Ottawa"
+  }, {
+    id: "london-on",
+    label: "London, Ontario",
+    short: "London ON"
+  }, {
+    id: "kingston",
+    label: "Kingston",
+    short: "Kingston"
+  }, {
+    id: "windsor",
+    label: "Windsor / Essex County",
+    short: "Windsor"
+  }, {
+    id: "barrie",
+    label: "Barrie / Simcoe County",
+    short: "Barrie"
+  }, {
+    id: "orillia",
+    label: "Orillia / Simcoe North",
+    short: "Orillia"
+  }, {
+    id: "sudbury",
+    label: "Greater Sudbury",
+    short: "Sudbury"
+  }, {
+    id: "sault",
+    label: "Sault Ste. Marie",
+    short: "Sault Ste. Marie"
+  }, {
+    id: "north-bay",
+    label: "North Bay",
+    short: "North Bay"
+  }, {
+    id: "timmins",
+    label: "Timmins",
+    short: "Timmins"
+  }, {
+    id: "thunder-bay",
+    label: "Thunder Bay",
+    short: "Thunder Bay"
+  }, {
+    id: "oshawa",
+    label: "Oshawa / Durham Region",
+    short: "Durham Region"
+  }, {
+    id: "niagara",
+    label: "St. Catharines / Niagara Region",
+    short: "Niagara"
+  }, {
+    id: "welland",
+    label: "Welland / Pelham",
+    short: "Welland"
+  }, {
+    id: "peterborough",
+    label: "Peterborough / Kawartha Lakes",
+    short: "Peterborough"
+  }, {
+    id: "belleville",
+    label: "Belleville / Quinte West",
+    short: "Belleville"
+  }, {
+    id: "st-thomas",
+    label: "St. Thomas / Elgin County",
+    short: "St. Thomas"
+  }, {
+    id: "chatham",
+    label: "Chatham-Kent",
+    short: "Chatham-Kent"
+  }, {
+    id: "sarnia",
+    label: "Sarnia / Lambton County",
+    short: "Sarnia"
+  }, {
+    id: "woodstock-on",
+    label: "Woodstock",
+    short: "Woodstock"
+  }, {
+    id: "stratford",
+    label: "Stratford",
+    short: "Stratford"
+  }, {
+    id: "owen-sound",
+    label: "Owen Sound / Grey-Bruce",
+    short: "Owen Sound"
+  }, {
+    id: "brockville",
+    label: "Brockville / Leeds-Grenville",
+    short: "Brockville"
+  }, {
+    id: "cornwall",
+    label: "Cornwall / Eastern Ontario",
+    short: "Cornwall"
+  }]
+}, {
+  prov: "British Columbia",
+  locs: [{
+    id: "vancouver",
+    label: "Vancouver / Metro Vancouver",
+    short: "Vancouver"
+  }, {
+    id: "burnaby",
+    label: "Burnaby / New Westminster",
+    short: "Burnaby"
+  }, {
+    id: "richmond-bc",
+    label: "Richmond / Delta",
+    short: "Richmond BC"
+  }, {
+    id: "surrey",
+    label: "Surrey / Langley",
+    short: "Surrey"
+  }, {
+    id: "victoria",
+    label: "Victoria / Greater Victoria",
+    short: "Victoria"
+  }, {
+    id: "kelowna",
+    label: "Kelowna / Okanagan Valley",
+    short: "Kelowna"
+  }, {
+    id: "abbotsford",
+    label: "Abbotsford / Fraser Valley",
+    short: "Abbotsford"
+  }, {
+    id: "nanaimo",
+    label: "Nanaimo / Vancouver Island",
+    short: "Nanaimo"
+  }, {
+    id: "kamloops",
+    label: "Kamloops",
+    short: "Kamloops"
+  }, {
+    id: "prince-george",
+    label: "Prince George",
+    short: "Prince George"
+  }]
+}, {
+  prov: "Alberta",
+  locs: [{
+    id: "calgary",
+    label: "Calgary",
+    short: "Calgary"
+  }, {
+    id: "edmonton",
+    label: "Edmonton",
+    short: "Edmonton"
+  }, {
+    id: "red-deer",
+    label: "Red Deer",
+    short: "Red Deer"
+  }, {
+    id: "lethbridge",
+    label: "Lethbridge",
+    short: "Lethbridge"
+  }, {
+    id: "medicine-hat",
+    label: "Medicine Hat",
+    short: "Medicine Hat"
+  }, {
+    id: "fort-mac",
+    label: "Fort McMurray / Wood Buffalo",
+    short: "Fort McMurray"
+  }]
+}, {
+  prov: "Québec",
+  locs: [{
+    id: "montreal",
+    label: "Montréal / Greater Montréal",
+    short: "Montréal"
+  }, {
+    id: "quebec-city",
+    label: "Québec City",
+    short: "Québec City"
+  }, {
+    id: "laval",
+    label: "Laval",
+    short: "Laval"
+  }, {
+    id: "longueuil",
+    label: "Longueuil / Rive-Sud",
+    short: "Longueuil"
+  }, {
+    id: "sherbrooke",
+    label: "Sherbrooke",
+    short: "Sherbrooke"
+  }, {
+    id: "gatineau",
+    label: "Gatineau / Outaouais",
+    short: "Gatineau"
+  }, {
+    id: "saguenay",
+    label: "Saguenay / Jonquière",
+    short: "Saguenay"
+  }, {
+    id: "trois-riv",
+    label: "Trois-Rivières",
+    short: "Trois-Rivières"
+  }]
+}, {
+  prov: "Manitoba",
+  locs: [{
+    id: "winnipeg",
+    label: "Winnipeg",
+    short: "Winnipeg"
+  }, {
+    id: "brandon",
+    label: "Brandon",
+    short: "Brandon"
+  }]
+}, {
+  prov: "Saskatchewan",
+  locs: [{
+    id: "saskatoon",
+    label: "Saskatoon",
+    short: "Saskatoon"
+  }, {
+    id: "regina",
+    label: "Regina",
+    short: "Regina"
+  }, {
+    id: "prince-albert",
+    label: "Prince Albert",
+    short: "Prince Albert"
+  }]
+}, {
+  prov: "Nova Scotia",
+  locs: [{
+    id: "halifax",
+    label: "Halifax / HRM",
+    short: "Halifax"
+  }, {
+    id: "cape-breton",
+    label: "Cape Breton / Sydney",
+    short: "Cape Breton"
+  }]
+}, {
+  prov: "New Brunswick",
+  locs: [{
+    id: "moncton",
+    label: "Moncton",
+    short: "Moncton"
+  }, {
+    id: "saint-john",
+    label: "Saint John",
+    short: "Saint John"
+  }, {
+    id: "fredericton",
+    label: "Fredericton",
+    short: "Fredericton"
+  }]
+}, {
+  prov: "Other Provinces & Territories",
+  locs: [{
+    id: "pei",
+    label: "Charlottetown / Prince Edward Island",
+    short: "PEI"
+  }, {
+    id: "st-johns",
+    label: "St. John's / Newfoundland",
+    short: "St. John's"
+  }, {
+    id: "yellowknife",
+    label: "Yellowknife / NWT",
+    short: "Yellowknife"
+  }, {
+    id: "whitehorse",
+    label: "Whitehorse / Yukon",
+    short: "Whitehorse"
+  }, {
+    id: "iqaluit",
+    label: "Iqaluit / Nunavut",
+    short: "Iqaluit"
+  }]
+}, {
+  /* GLOBAL MODE ONLY. Regions a student can serve into remotely, or in person
+     if they're living, moving, or travelling there. Kept as regions rather
+     than a 195-country dropdown — a region is what actually changes which
+     organizations exist, and it keeps the search prompt useful.
+     Filtered out entirely when GLOBAL_MODE is false (see LOC_GROUPS below). */
+  globalOnly: true,
+  prov: "Rest of the world",
+  locs: [{
+    id: "usa",
+    label: "United States",
+    short: "the United States"
+  }, {
+    id: "uk-ireland",
+    label: "United Kingdom & Ireland",
+    short: "the UK & Ireland"
+  }, {
+    id: "europe",
+    label: "Europe",
+    short: "Europe"
+  }, {
+    id: "latam",
+    label: "Latin America & the Caribbean",
+    short: "Latin America"
+  }, {
+    id: "africa",
+    label: "Africa",
+    short: "Africa"
+  }, {
+    id: "mena",
+    label: "Middle East & North Africa",
+    short: "the Middle East & North Africa"
+  }, {
+    id: "south-asia",
+    label: "South Asia",
+    short: "South Asia"
+  }, {
+    id: "east-asia",
+    label: "East & Southeast Asia",
+    short: "East & Southeast Asia"
+  }, {
+    id: "oceania",
+    label: "Australia, NZ & the Pacific",
+    short: "Oceania"
+  }]
+}, {
+  /* Remote exists in both modes, but it means different things and says so.
+     In Canada mode it is the original "Virtual: anywhere in Canada" — remote
+     work for a Canadian organization. In global mode it opens up to the world. */
+  prov: GLOBAL_MODE ? "Remote / Anywhere" : "Virtual / Remote",
+  locs: [{
+    id: "virtual",
+    label: GLOBAL_MODE ? "Remote: serve anywhere in the world" : "Virtual: anywhere in Canada",
+    short: GLOBAL_MODE ? "Remote" : "Virtual"
+  }]
+}]
+// Canada mode drops the world regions entirely, leaving the province list the
+// app launched with. Done here rather than at every call site so nothing can
+// forget: ALL_LOCS, the dropdown, and validation all read the filtered list.
+.filter(g => GLOBAL_MODE || !g.globalOnly);
+const ALL_LOCS = LOC_GROUPS.flatMap(g => g.locs);
+/* Which locations count as "not local Canadian", used to tell the search
+   engines whether to look for a local org or an international one. In Canada
+   mode the world regions do not exist, so this is only ever the virtual entry
+   — and `useGlobal` gates that too, so the international library stays out. */
+const GLOBAL_LOC_IDS = new Set(LOC_GROUPS.filter(g => /Rest of the world|Remote/.test(g.prov)).flatMap(g => g.locs.map(l => l.id)));
+const isGlobalLoc = id => GLOBAL_LOC_IDS.has(id);
+const TALENTS = [{
+  id: "music",
+  label: "Music & Performance",
+  Icon: Music,
+  desc: "Instruments, vocals, DJing, production"
+}, {
+  id: "environment",
+  label: "Environment & Climate",
+  Icon: Leaf,
+  desc: "Conservation, outdoors, sustainability"
+}, {
+  id: "education",
+  label: "Education & Tutoring",
+  Icon: BookOpen,
+  desc: "STEM, literacy, mentorship"
+}, {
+  id: "sports",
+  label: "Athletics & Sports",
+  Icon: Activity,
+  desc: "Coaching, fitness, adaptive sports"
+}, {
+  id: "business",
+  label: "Business & Finance",
+  Icon: TrendingUp,
+  desc: "Entrepreneurship, financial literacy"
+}, {
+  id: "community",
+  label: "Community & Tech",
+  Icon: Smile,
+  desc: "Digital skills, food banks, social care"
+}];
+/* ── Proficiency ──
+   The matching prompts already reason about level ("must not be matched to a
+   role that needs an advanced classical soloist"), but nothing ever collected
+   it, so that instruction had no data behind it. A checkbox says "I play
+   piano"; it can't tell a first-year student apart from someone who's played
+   competitively for eight years, and those two belong in different roles.
+
+   Deliberately four coarse buckets, not a 1-10 slider — a teenager can answer
+   this honestly in one tap, and finer resolution wouldn't survive self-report
+   anyway. */
+const LEVEL_OPTS = [{
+  id: "learning",
+  label: "Still learning",
+  sub: "I'd want someone alongside me"
+}, {
+  id: "solid",
+  label: "Solid",
+  sub: "I can do this unsupervised"
+}, {
+  id: "advanced",
+  label: "Advanced",
+  sub: "Years of it, or competed/performed seriously"
+}, {
+  id: "certified",
+  label: "Certified",
+  sub: "I hold a formal qualification in it"
+}];
+const LEVEL_LABEL = id => (LEVEL_OPTS.find(l => l.id === id) || {}).label || "";
+
+/* ── Languages ──
+   Called out explicitly in the notes, and one of the strongest matching
+   signals there is: a volunteer who speaks Arabic is not interchangeable with
+   one who doesn't when the role is settlement support. Previously this only
+   ever arrived by accident, if a student happened to type it into the free
+   text box. */
+const LANGUAGES = ["English", "French", "Mandarin", "Cantonese", "Punjabi", "Hindi", "Urdu", "Spanish", "Portuguese", "Arabic", "Tagalog", "Vietnamese", "Farsi", "Russian", "Ukrainian", "Korean", "Japanese", "Tamil", "Bengali", "Gujarati", "Polish", "Italian", "German", "Greek", "Somali", "Swahili", "Amharic", "Tigrinya", "Turkish", "Hebrew", "Yiddish", "Cree", "Ojibwe", "Inuktitut", "American Sign Language", "Langue des signes québécoise"];
+const LANG_LEVELS = [{
+  id: "conv",
+  label: "Conversational"
+}, {
+  id: "fluent",
+  label: "Fluent"
+}, {
+  id: "native",
+  label: "Native / first language"
+}];
+const SUPERPOWERS = {
+  music: [{
+    id: "a",
+    label: "Guitar, ukulele, or piano: I can accompany singalongs and lead informal group sessions."
+  }, {
+    id: "b",
+    label: "Vocals: I can lead group singing, hold a part in a choir, or perform for an audience."
+  }, {
+    id: "c",
+    label: "Concert instrument at intermediate or advanced level: I can perform recitals and teach fundamentals."
+  }],
+  environment: [{
+    id: "a",
+    label: "Hands-on field work: planting, invasive species removal, shoreline and trail restoration."
+  }, {
+    id: "b",
+    label: "Citizen science and data: species surveys, water quality testing, recording and organizing field data."
+  }, {
+    id: "c",
+    label: "Environmental education: I can run workshops and explain conservation clearly to the public."
+  }],
+  education: [{
+    id: "a",
+    label: "Math and sciences: I can tutor core curriculum subjects up to my own grade level."
+  }, {
+    id: "b",
+    label: "Literacy and language: I can support reading, writing, and English language learners."
+  }, {
+    id: "c",
+    label: "Computer science and STEM: I can teach coding or robotics and help run a tech club."
+  }],
+  sports: [{
+    id: "a",
+    label: "Coaching and instruction: I can run drills, teach fundamentals, and manage a group of young athletes."
+  }, {
+    id: "b",
+    label: "Game-day operations: officiating, scorekeeping, equipment management, and tournament support."
+  }, {
+    id: "c",
+    label: "Adaptive and inclusive sport: I can support athletes with disabilities one-on-one."
+  }],
+  business: [{
+    id: "a",
+    label: "Financial literacy: I can teach budgeting, saving, and money basics to beginners."
+  }, {
+    id: "b",
+    label: "Fundraising and events: I can plan campaigns, approach sponsors, and run fundraising events."
+  }, {
+    id: "c",
+    label: "Operations and marketing: I can manage social media, design materials, and organize systems."
+  }],
+  community: [{
+    id: "a",
+    label: "Digital skills coaching: I can teach seniors and newcomers to use devices, apps, and video calls."
+  }, {
+    id: "b",
+    label: "Food security and logistics: I can sort, pack, manage inventory, and run distribution shifts."
+  }, {
+    id: "c",
+    label: "Companionship and direct support: I can visit, listen, and assist people one-on-one."
+  }]
+};
+/* ── Volunteering Interest Card (VIC) dimensions ──
+   The matcher used to ask what you're good at and roughly when you're free,
+   which is enough to name a category and not enough to name a role. These are
+   the two missing dimensions: how you want to show up, and why you're doing it
+   at all. "Why" in particular is what separates a match from a suggestion —
+   someone who wants to build a skill and someone who wants company belong in
+   very different rooms, even with identical talents. */
+const VTYPE_OPTS = [{
+  id: "homunteer",
+  label: "From home",
+  sub: COPY.fromHomeSub
+}, {
+  id: "local",
+  label: "In my community",
+  sub: "In person, close to where I live"
+}, {
+  id: "voluntourism",
+  label: "Somewhere I'm travelling",
+  sub: "While visiting family or abroad"
+}];
+const WHY_OPTS = [{
+  id: "skill",
+  label: "Get better at something I'm good at",
+  sub: "Real practice, real stakes"
+},
+
+// Doubles as an intake signal: someone here needs a role with people in it.
+{
+  id: "people",
+  label: "Meet people and not be alone in it",
+  sub: "Team-based, social by design"
+}, {
+  id: "cause",
+  label: "A cause I actually care about",
+  sub: "The issue matters more than the task"
+}, {
+  id: "career",
+  label: "See if a career fits before I commit",
+  sub: "Shadowing, clinical or field exposure"
+}, {
+  id: "community",
+  label: "Give back to a community I'm part of",
+  sub: "My neighbourhood, culture, or school"
+}, {
+  id: "record",
+  label: "Build a record I can point to",
+  sub: "Hours, references, a certificate"
+}];
+const TIME_OPTS = [{
+  id: "light",
+  label: "1–2 hours a week",
+  sub: "Light and sustainable"
+}, {
+  id: "medium",
+  label: "3–5 hours a week",
+  sub: "Committed and consistent"
+}, {
+  id: "heavy",
+  label: "6+ hours a week",
+  sub: "Community is a real priority"
+}, {
+  id: "events",
+  label: "Events only - flexible dates",
+  sub: "Burst commitment, high impact"
+}];
+/* Setting is about the SHAPE of the work — how many people are in the room.
+   Whether the room is physical at all is VTYPE's question, and it used to be
+   asked here too, which let a student answer "In my community" and
+   "Virtual / remote" at the same time. */
+const VIBE_OPTS = [{
+  id: "group",
+  label: "Group settings",
+  sub: "Teams, kids, energetic spaces"
+}, {
+  id: "solo",
+  label: "1-on-1 depth",
+  sub: "Individual connections and mentorship"
+}, {
+  id: "either",
+  label: "Either works",
+  sub: "I'm not fussy about the format"
+}];
+
+/* Who the student wants to serve. This is one of the strongest matching
+   signals we collect: it separates "tutoring" from "tutoring newcomers"
+   and lets the engine target the actual population an org serves. */
+const SERVE_OPTS = [{
+  id: "children",
+  label: "Children (under 12)"
+}, {
+  id: "teens",
+  label: "Teens and peers"
+}, {
+  id: "seniors",
+  label: "Seniors"
+}, {
+  /* One "People with disabilities" option was too coarse to search with. The
+     organizations are genuinely separate (CNIB and Canadian Hearing Services
+     are not interchangeable), the roles differ, and so does what a student
+     needs to know before their first shift: a low-vision reading program wants
+     a clear reading voice, a Deaf community group may want a student learning
+     ASL. Naming the community lets the engine find the right organization
+     instead of a generic disability charity.
+
+     The `disability` id is kept exactly as it was so profiles saved before this
+     split still match on it. */
+  id: "blind-lowvision",
+  label: "Blind and low vision"
+}, {
+  id: "deaf-hoh",
+  label: "Deaf and hard of hearing"
+}, {
+  id: "disability",
+  label: "People with disabilities"
+}, {
+  id: "newcomers",
+  label: "Newcomers and refugees"
+}, {
+  id: "lowincome",
+  label: "Low-income families"
+}, {
+  id: "animals",
+  label: "Animals and wildlife"
+}, {
+  id: "any",
+  label: "Open to anyone"
+}];
+
+/* ═══════════════════════════════════════
+   AI ENGINE - unchanged
+═══════════════════════════════════════ */
+const JSON_SHAPE = `[{
+  "title": "The specific ROLE title, not the org name. e.g. 'Piano Accompanist for Memory Care Singalongs', NOT 'Music Volunteer'",
+  "org": "Exact organization name",
+  "role": "2 sentences describing concretely what this student would DO in a typical session. Name the actual tasks. No vague phrases like 'help out' or 'support the team'.",
+  "whyMatch": "1-2 sentences naming the student's SPECIFIC stated capability and tying it directly to a SPECIFIC demand of this role. Must reference something they actually said about themselves. Never generic.",
+  "commitment": "Concrete schedule, e.g. 'Tuesdays 4-6pm, 8-week term' or 'Saturday mornings, ongoing'",
+  "firstStep": "The exact first action to take, e.g. 'Email the volunteer coordinator through the Get Involved page and ask about the youth music program'",
+  "requirements": "Age minimum, screening, or training if any, e.g. '15+, orientation session required'. Use 'None listed' if there are none.",
+  "where": "Specific area served",
+  "hours": "X hrs/week",
+  "link": "The organization's own page for this role, or its homepage if that is genuinely all that exists.",
+  "applyLink": "The exact url where this student actually applies: the application form, the volunteer intake page, or the third-party portal (BetterImpact, Volunteer Connector, Galaxy Digital, a Google Form) the organization sends applicants to. You have web_fetch, so open the site and follow Volunteer or Get Involved until you reach it rather than guessing. Open the page before you name it. OMIT this field entirely if there is no online application and applying means emailing or phoning, and say which in firstStep.",
+  "minAge": "The minimum age the organization states, as a number, e.g. 16. OMIT if the page does not state one. Never guess: a student turned away at the door because we implied they were eligible is worse than us saying we do not know.",
+  "screening": "Any police record check, vulnerable sector check, reference requirement, or mandatory training the page states, in a few words. OMIT if none is stated.",
+  "contactEmail": "ONLY a real volunteer/general contact email you are confident actually exists for this organization (e.g. volunteer@org.ca or info@org.ca). If you are not sure it is real, OMIT this field entirely. Never invent, guess, or pattern-match an email address.",
+  "tags": ["youth-friendly"]
+}]
+
+WRITING STYLE: clear, plain, and specific. Write like a knowledgeable advisor, not a marketer. No exclamation marks, no hype words (amazing, incredible, perfect, dream), no forced enthusiasm, no puns or jokes. State facts about the role.`;
+/* ══════════════════════════════════════════════════════════════════
+   AI TRANSPORT LAYER
+
+   Transport priority:
+     1. Server proxy   — keys live in env vars, never in this file
+     2. Anthropic key  — if one is compiled in
+     3. Gemini key     — free-tier fallback
+     4. Keyless Anthropic — works inside the Claude.ai preview
+
+   Every request runs through a concurrency-limited pool with
+   in-flight deduplication and a TTL result cache, so the parallel
+   engines can never stampede a provider or pay twice for the same
+   question. Grounded searches return their web citations alongside
+   the text so results can be shown with real sources.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ⚠ SECURITY — READ THIS.
+   Anything you put in the two constants below ships to the browser and is
+   readable by anyone who views source. The GEMINI_API_KEY below is already
+   public for that reason: rotate it, then move it to your host's environment
+   variables (see netlify/functions/ai-search.js) and set it back to "".
+   With the proxy deployed, the app is fully functional with BOTH constants
+   empty — that is the configuration you want in production. */
+const API_KEY = "";
+/* Empty on purpose — this file is published to a public repository, and any key
+   placed here is readable by anyone and scraped by bots within minutes.
+
+   The app does not need one: live matching runs on Claude Sonnet 5 through the
+   server proxy, where ANTHROPIC_API_KEY is an environment variable the browser
+   never sees. A student on a host with no proxy can still add their own free
+   Gemini key under Settings, which stays in their browser alone. */
+const BUILT_IN_GEMINI_KEY = "";
+
+/* A key the user pasted in Settings wins over the compiled-in one. This exists
+   because the built-in free-tier key is shared by everyone using this build and
+   its daily quota (20 requests) is gone within minutes of the day starting —
+   which is what makes live results silently stop appearing. */
+let GEMINI_API_KEY = (() => {
+  try {
+    return localStorage.getItem("rise_gemini_key") || BUILT_IN_GEMINI_KEY;
+  } catch (e) {
+    return BUILT_IN_GEMINI_KEY;
+  }
+})();
+function setGeminiKey(k) {
+  GEMINI_API_KEY = (k || "").trim() || BUILT_IN_GEMINI_KEY;
+  try {
+    if ((k || "").trim()) localStorage.setItem("rise_gemini_key", k.trim());else localStorage.removeItem("rise_gemini_key");
+  } catch (e) {}
+  AI_HEALTH.state = "unknown";
+  AI_HEALTH.detail = "";
+  aiCache.clear();
+}
+
+/* ── AI health ──
+   The old build swallowed every provider error and quietly served the offline
+   library, so a dead key looked identical to a working one: same results, every
+   search, forever. Nothing here changes what the app does on failure — it still
+   degrades to the library — but the student is now told which one they got. */
+const AI_HEALTH = {
+  state: "unknown",
+  // "unknown" | "live" | "quota" | "auth" | "down"
+  detail: "",
+  at: 0
+};
+const aiHealthListeners = new Set();
+function setAIHealth(state, detail) {
+  if (AI_HEALTH.state === state && AI_HEALTH.detail === detail) return;
+  AI_HEALTH.state = state;
+  AI_HEALTH.detail = detail || "";
+  AI_HEALTH.at = Date.now();
+  aiHealthListeners.forEach(fn => {
+    try {
+      fn(AI_HEALTH);
+    } catch (e) {}
+  });
+}
+function onAIHealth(fn) {
+  aiHealthListeners.add(fn);
+  return () => aiHealthListeners.delete(fn);
+}
+
+// Proxy endpoints, tried in order. Netlify, Cloudflare Pages and Vercel all
+// map to one of these; the first that answers wins and is remembered.
+const PROXY_PATHS = ["/api/ai-search", "/.netlify/functions/ai-search"];
+
+const MODELS = {
+  smart: "claude-sonnet-5",
+  fast: "claude-haiku-4-5-20251001",
+  gemini: "gemini-3.5-flash"
+};
+
+/* ── Gemini model ladder ──
+   Free-tier quota is metered PER MODEL, per project, per day. The old build
+   pinned everything to gemini-2.5-flash, whose allowance is 20 requests a day —
+   so once that single bucket emptied the whole app went dark, even though other
+   models on the very same key still had quota sitting unused.
+
+   These are tried in order. A model that reports an exhausted daily quota is
+   parked until tomorrow and the next one is used instead, which turns one small
+   bucket into several. Ordered best-quality-first, since the cheaper models are
+   only worth reaching for when the better ones are spent. */
+const GEMINI_LADDER = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash"];
+
+/* Google Search grounding is metered separately from generation, and on the
+   free tier it commonly has no allowance at all. Once we've learned that, stop
+   asking for it — otherwise every search-based engine burns a request finding
+   out the same thing again. */
+let GROUNDING_OFF = false;
+
+// model -> timestamp until which we treat it as out of daily quota
+const modelBlocked = Object.create(null);
+function availableModels() {
+  const now = Date.now();
+  const free = GEMINI_LADDER.filter(m => !(modelBlocked[m] > now));
+  // If everything is parked, fall back to the full ladder rather than giving up
+  // outright — a stale block shouldn't outlive a quota window that has reset.
+  return free.length ? free : GEMINI_LADDER.slice();
+}
+function blockModel(model, ms) {
+  modelBlocked[model] = Date.now() + (ms || 60000);
+}
+// A per-day cap won't clear by waiting a minute; park it until just after midnight.
+function msUntilQuotaReset() {
+  const now = new Date();
+  const reset = new Date(now);
+  reset.setHours(24, 5, 0, 0);
+  return Math.max(60000, reset - now);
+}
+
+/* ── Structured output schemas ──
+   These replace "please reply with JSON and nothing else" plus regex
+   scraping. The provider enforces the shape, so a malformed response
+   stops being a class of bug we can hit. */
+const S = (type, extra) => Object.assign({
+  type
+}, extra || {});
+const OPP_SCHEMA = {
+  type: "ARRAY",
+  items: {
+    type: "OBJECT",
+    properties: {
+      title: S("STRING"),
+      org: S("STRING"),
+      role: S("STRING"),
+      whyMatch: S("STRING"),
+      commitment: S("STRING"),
+      firstStep: S("STRING"),
+      requirements: S("STRING"),
+      where: S("STRING"),
+      hours: S("STRING"),
+      link: S("STRING"),
+      contactEmail: S("STRING"),
+      // The exact page this was read on. Without it in the schema the model
+      // physically cannot return one, however hard the prompt asks.
+      sourceUrl: S("STRING"),
+      /* Stated outright rather than guessed from the prose of `where`.
+         A student who answered REMOTE ONLY cannot attend in person at all —
+         that is a hard constraint, not a preference to be traded off against a
+         good skill match — so the pipeline needs a reliable flag to enforce
+         it. Inferring remoteness from free text got it wrong often enough to
+         put impossible roles at the top of the list. */
+      remote: S("BOOLEAN"),
+      /* The three fields the deep fetch exists to produce. As the sourceUrl
+         note above says, a field absent from this schema cannot be returned no
+         matter what the prompt asks for, so adding them here is what makes the
+         traversal worth paying for.
+
+         None are required. An organization that takes applications by email has
+         no applyLink, and a page that never states an age has no minAge. Making
+         them required would only invite the model to fill them in, and an
+         invented age floor is worse than a missing one: a student turned away
+         at the door because we implied they were eligible. */
+      applyLink: S("STRING"),
+      minAge: S("INTEGER"),
+      screening: S("STRING"),
+      tags: {
+        type: "ARRAY",
+        items: S("STRING")
+      }
+    },
+    required: ["title", "org", "role", "whyMatch", "commitment", "firstStep", "where", "hours", "link", "remote"]
+  }
+};
+const JUDGE_SCHEMA = {
+  type: "ARRAY",
+  items: {
+    type: "OBJECT",
+    properties: {
+      id: S("INTEGER"),
+      capability: S("INTEGER"),
+      population: S("INTEGER"),
+      logistics: S("INTEGER"),
+      credibility: S("INTEGER"),
+      verdict: S("STRING", {
+        enum: ["strong", "good", "weak", "reject"]
+      }),
+      evidence: S("STRING"),
+      concern: S("STRING")
+    },
+    required: ["id", "capability", "population", "logistics", "credibility", "verdict", "evidence"]
+  }
+};
+
+/* ── JSON extraction (still needed for grounded calls) ──
+   Gemini refuses responseSchema when google_search is enabled, so the two
+   discovery engines return text. Everything else is schema-enforced. */
+function extractJSON(data) {
+  if (data && data.parsed) return data.parsed; // schema-enforced path
+  const raw = (data.content || []).map(c => c.type === "text" ? c.text : "").filter(Boolean).join("\n");
+  const txt = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
+  const fix = s => {
+    try {
+      const r = JSON.parse(s.replace(/,\s*([}\]])/g, "$1"));
+      if (Array.isArray(r) && r.length && (r[0].org || r[0].title)) return r;
+    } catch (e) {}
+    return null;
+  };
+  const spans = [];
+  const re = /\[[\s\S]*?\]/g;
+  let m;
+  while ((m = re.exec(txt)) !== null) {
+    spans.push(m[0]);
+    if (re.lastIndex === m.index) re.lastIndex++;
+  }
+  spans.sort((a, b) => b.length - a.length);
+  for (const s of spans) {
+    const r = fix(s);
+    if (r) return r;
+  }
+  const g = txt.match(/\[[\s\S]*\]/);
+  if (g) {
+    const r = fix(g[0]);
+    if (r) return r;
+  }
+  throw new Error("No valid results");
+}
+function safeAllSettled(promises) {
+  if (typeof Promise.allSettled === "function") return Promise.allSettled(promises);
+  return Promise.all(promises.map(p => p.then(value => ({
+    status: "fulfilled",
+    value
+  })).catch(reason => ({
+    status: "rejected",
+    reason
+  }))));
+}
+
+/* ── Concurrency pool ──
+   Free-tier Gemini rate-limits hard. Four engines firing at once used to
+   burn two of them on 429s; this caps real parallelism and queues the rest. */
+function makePool(limit) {
+  let active = 0;
+  const q = [];
+  const next = () => {
+    if (active >= limit || !q.length) return;
+    active++;
+    const {
+      fn,
+      resolve,
+      reject
+    } = q.shift();
+    fn().then(resolve, reject).finally(() => {
+      active--;
+      next();
+    });
+  };
+  return fn => new Promise((resolve, reject) => {
+    q.push({
+      fn,
+      resolve,
+      reject
+    });
+    next();
+  });
+}
+const aiPool = makePool(3);
+
+/* ── Result cache + in-flight dedupe ──
+   Two engines asking the same question in the same second share one
+   network call. Answers stay warm for 30 minutes. */
+/* Cache lifetime for repeatable, non-search calls (judging, drafting). Live
+   searches never read this — see `fresh` below. Getting that wrong is exactly
+   what made every search return the same three organizations: the answer was
+   being replayed from store instead of looked up again. */
+const AI_TTL = 30 * 60 * 1000;
+const aiCache = new Map(); // key -> { at, value }
+const aiInflight = new Map(); // key -> Promise
+function cacheKeyOf(body) {
+  // An explicit cacheKey is the caller stating the identity of the answer, so
+  // honour it here too rather than re-deriving one from the prompt text.
+  if (typeof body.cacheKey === "string" && body.cacheKey) return "k:" + body.cacheKey;
+  try {
+    return JSON.stringify([body.model, body.system, body.messages, !!body.tools, body.schema, body.search]);
+  } catch (e) {
+    return String(Math.random());
+  }
+}
+/* Is this the Claude.ai preview, where api.anthropic.com is proxied for us?
+   Anywhere else a keyless browser call to that host is blocked by CORS, so
+   attempting it only wastes a round trip before the offline library answers. */
+function inClaudePreview() {
+  try {
+    if (typeof window.claude !== "undefined") return true;
+    return /(^|\.)claude\.ai$|(^|\.)claudeusercontent\.com$/.test(window.location.hostname);
+  } catch (e) {
+    return false;
+  }
+}
+function buildHeaders() {
+  const h = {
+    "Content-Type": "application/json"
+  };
+  if (API_KEY) {
+    h["x-api-key"] = API_KEY;
+    h["anthropic-version"] = "2023-06-01";
+    h["anthropic-dangerous-direct-browser-access"] = "true";
+  }
+  return h;
+}
+
+/* ── Gemini free-tier rate limiter ──
+   The free tier allows 5 requests per minute per model. The old code fired
+   four discovery engines at once and then a per-card follow-up for each
+   result, so most of a search 429'd and quietly fell back to the offline
+   library — which is the real reason live results felt unreliable.
+
+   This is a token bucket that paces requests to fit, and honours the exact
+   retry delay Google hands back instead of guessing. */
+const GEM_RPM = 5;
+const gemTimes = [];
+let gemBlockedUntil = 0;
+async function geminiSlot() {
+  for (;;) {
+    const now = Date.now();
+    while (gemTimes.length && now - gemTimes[0] > 60000) gemTimes.shift();
+    const waits = [];
+    if (gemBlockedUntil > now) waits.push(gemBlockedUntil - now);
+    if (gemTimes.length >= GEM_RPM) waits.push(60000 - (now - gemTimes[0]) + 250);
+    if (!waits.length) {
+      gemTimes.push(now);
+      return;
+    }
+    await new Promise(r => setTimeout(r, Math.max(...waits)));
+  }
+}
+
+// Google reports the exact wait in the error body — use it rather than guess.
+function retryDelayOf(text) {
+  const m = /"?retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s/.exec(text) || /retry in (\d+(?:\.\d+)?)s/i.exec(text);
+  return m ? Math.ceil(parseFloat(m[1]) * 1000) + 500 : 0;
+}
+
+// True when we're on the constrained free-Gemini path with no proxy and no
+// Anthropic key — the pipeline spends its request budget differently there.
+function isConstrained() {
+  return PROXY_STATE === "dead" && !API_KEY && !!GEMINI_API_KEY;
+}
+
+/* One HTTP round trip to a single named model. Returns a tagged result rather
+   than throwing for quota, so the ladder above it can decide what to do next. */
+async function geminiOnce(model, payload, timeoutMs) {
+  await geminiSlot(); // wait for a free slot in the per-minute budget
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(GEMINI_API_KEY), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+    if (res.status === 429 || res.status === 503) {
+      const text = await res.text().catch(() => "");
+      return {
+        kind: "quota",
+        status: res.status,
+        // A per-day cap doesn't clear by waiting a few seconds. Anything else does.
+        daily: /PerDay/i.test(text) || /limit: 0\b/.test(text),
+        retryMs: retryDelayOf(text),
+        // Grounding is metered separately from generation, and on the free tier
+        // it is usually the part with no allowance at all.
+        grounding: !!payload.tools && !/generate_content_free_tier_requests/.test(text)
+      };
+    }
+    // 404 here means "this model isn't available to this key", not "bad URL".
+    if (res.status === 404) return {
+      kind: "nomodel"
+    };
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      const text = await res.text().catch(() => "");
+      return {
+        kind: "auth",
+        detail: /expired/i.test(text) ? "expired" : "rejected"
+      };
+    }
+    if (!res.ok) return {
+      kind: "error",
+      status: res.status
+    };
+    const data = await res.json();
+    const cand = data.candidates?.[0];
+    const text = cand?.content?.parts?.map(p => p.text || "").join("") || "";
+    if (!text) return {
+      kind: "empty",
+      finish: cand?.finishReason
+    };
+    // A truncated answer is worse than none when the caller wants JSON: it
+    // parses to nothing and the engine looks like it simply failed. Report it
+    // so the ladder can retry with a bigger budget.
+    if (cand?.finishReason === "MAX_TOKENS") return {
+      kind: "truncated",
+      text,
+      cand
+    };
+    return {
+      kind: "ok",
+      text,
+      cand
+    };
+  } catch (e) {
+    clearTimeout(timer);
+    return {
+      kind: "error",
+      err: e
+    };
+  }
+}
+
+/* ── Gemini adapter ──
+   Speaks our Anthropic-shaped request, and walks the model ladder so one
+   exhausted daily bucket can't take the whole app down.
+
+   Two output modes:
+     schema mode   — responseSchema enforces the output shape exactly
+     grounded mode — google_search enabled, output is text (Gemini forbids
+                     combining the two), citations returned alongside. */
+async function geminiCall(body, timeoutMs = 60000, retries = 2) {
+  const prompt = (body.messages || []).map(m => typeof m.content === "string" ? m.content : "").join("\n");
+  const wantSearch = !!(body.tools && body.tools.length) || !!body.search;
+  const build = (withSearch, model, extraRoom) => {
+    /* Gemini 3.x models think before they answer, and those thought tokens come
+       out of maxOutputTokens. Passing the caller's budget straight through left
+       46 tokens for the actual answer after 1438 went on reasoning, so every
+       structured response came back truncated and unparseable.
+
+       So: reserve headroom for thinking on top of what the caller asked for,
+       and hold thinking to "low" — enough for the judge to reason properly,
+       bounded enough that it can't eat the response. */
+    const isThinking = /gemini-3/.test(model);
+    const want = body.max_tokens || 1800;
+    const payload = {
+      contents: [{
+        parts: [{
+          text: prompt
+        }]
+      }],
+      generationConfig: {
+        maxOutputTokens: Math.min(isThinking ? want + 2600 + (extraRoom || 0) : want, 16000),
+        temperature: body.temperature != null ? body.temperature : 0.5,
+        topP: 0.95
+      }
+    };
+    if (isThinking) payload.generationConfig.thinkingConfig = {
+      thinkingLevel: "low"
+    };
+    if (body.system) payload.systemInstruction = {
+      parts: [{
+        text: body.system
+      }]
+    };
+    if (withSearch) {
+      payload.tools = [{
+        google_search: {}
+      }];
+    } else if (body.schema) {
+      payload.generationConfig.responseMimeType = "application/json";
+      payload.generationConfig.responseSchema = body.schema;
+    }
+    return payload;
+  };
+  let searchOn = wantSearch && !GROUNDING_OFF;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    for (const model of availableModels()) {
+      const r = await geminiOnce(model, build(searchOn, model, attempt * 3000), timeoutMs);
+      if (r.kind === "ok") {
+        setAIHealth(searchOn || !wantSearch ? "live" : "nosearch", searchOn || !wantSearch ? "" : "Live web search isn't available on this key, so results come from the model's own knowledge.");
+        const out = {
+          content: [{
+            type: "text",
+            text: r.text
+          }],
+          sources: groundingSources(r.cand),
+          model,
+          grounded: searchOn
+        };
+        if (body.schema && !searchOn) {
+          try {
+            out.parsed = JSON.parse(r.text);
+          } catch (e) {}
+        }
+        return out;
+      }
+      if (r.kind === "auth") {
+        setAIHealth("auth", r.detail === "expired" ? "The AI key has expired. Add a new one in Settings." : "The AI key was rejected. Check it in Settings.");
+        throw new Error("AUTH");
+      }
+      if (r.kind === "truncated") {
+        // Retry the same model with more headroom; if we're out of attempts,
+        // take the partial text rather than throwing it away — the tolerant
+        // JSON reader can often still recover whole objects from it.
+        if (attempt < retries) {
+          lastErr = new Error("truncated");
+          continue;
+        }
+        setAIHealth("live", "");
+        return {
+          content: [{
+            type: "text",
+            text: r.text
+          }],
+          sources: groundingSources(r.cand),
+          model,
+          grounded: searchOn,
+          truncated: true
+        };
+      }
+      if (r.kind === "nomodel") {
+        // Not available to this key at all — never try it again this session.
+        blockModel(model, 24 * 3600 * 1000);
+        continue;
+      }
+      if (r.kind === "quota") {
+        // Grounding out of quota is not the model's fault: drop search and let
+        // the same model answer from its own knowledge rather than losing the
+        // engine entirely. Far better than no results.
+        if (searchOn && r.grounding) {
+          GROUNDING_OFF = true;
+          searchOn = false;
+          const r2 = await geminiOnce(model, build(false, model, attempt * 3000), timeoutMs);
+          if (r2.kind === "ok") {
+            setAIHealth("nosearch", "Live web search isn't available on this key, so results come from the model's own knowledge.");
+            const out = {
+              content: [{
+                type: "text",
+                text: r2.text
+              }],
+              sources: [],
+              model,
+              grounded: false
+            };
+            if (body.schema) {
+              try {
+                out.parsed = JSON.parse(r2.text);
+              } catch (e) {}
+            }
+            return out;
+          }
+        }
+        // Park this model and move down the ladder. A daily cap is parked until
+        // the quota window rolls over; a per-minute one only briefly.
+        blockModel(model, r.daily ? msUntilQuotaReset() : r.retryMs || 30000);
+        if (!r.daily && r.retryMs) gemBlockedUntil = Date.now() + r.retryMs;
+        lastErr = new Error("API " + r.status);
+        continue;
+      }
+      lastErr = r.err || new Error("API " + (r.status || r.kind));
+    }
+    if (attempt < retries) await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
+  }
+  // Every model on the ladder is spent.
+  setAIHealth("quota", "Today's free AI allowance is used up. It resets at midnight Pacific time.");
+  throw lastErr || new Error("API 429");
+}
+
+// Pull the real web pages Gemini actually read, so results can cite them.
+function groundingSources(cand) {
+  const chunks = cand?.groundingMetadata?.groundingChunks || [];
+  const out = [];
+  const seen = new Set();
+  for (const c of chunks) {
+    const uri = c?.web?.uri;
+    if (!uri) continue;
+    const title = c.web.title || "";
+    const k = title || uri;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({
+      title,
+      uri
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+let PROXY_STATE = "untried"; // "untried" | "ok" | "dead"
+// What the server told us it can do, learned from the free ping.
+const PROXY_CAPS = {
+  known: false,
+  provider: "",
+  search: false
+};
+let PROXY_PATH = PROXY_PATHS[0];
+/* Find the proxy once, cheaply.
+
+   This used to be done by giving an unproven proxy a 4-second leash on the
+   real request — which is fine for a quick call and fatal for a grounded web
+   search, because those legitimately take 25-40 seconds. The search was being
+   aborted before it could ever succeed, the proxy was marked dead, and the app
+   silently dropped to the keyless path with no web search at all.
+
+   So discovery is now its own tiny request: a static host 404s in
+   milliseconds, and once a path answers, real requests get their full time. */
+async function findProxy() {
+  if (PROXY_STATE !== "untried") return PROXY_STATE === "ok";
+  for (const path of PROXY_PATHS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          action: "ping"
+        }),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      // Anything that isn't a routing miss means something is listening here.
+      // A 400 ("messages required") is a perfectly good sign of life.
+      if (res.status !== 404 && res.status !== 405) {
+        PROXY_STATE = "ok";
+        PROXY_PATH = path;
+        // The ping reports which provider is configured and whether live web
+        // search is available. Knowing that up front is the difference between
+        // "live search couldn't be reached" and "add your key in Cloudflare".
+        try {
+          const info = await res.json();
+          if (info && typeof info === "object") {
+            PROXY_CAPS.provider = info.provider || "";
+            PROXY_CAPS.search = !!info.search;
+            PROXY_CAPS.known = true;
+          }
+        } catch (e) {}
+        return true;
+      }
+    } catch (e) {
+      clearTimeout(timer);
+    }
+  }
+  PROXY_STATE = "dead";
+  return false;
+}
+async function proxyCall(body, timeoutMs) {
+  if (!(await findProxy())) throw new Error("proxy unavailable");
+  const paths = [PROXY_PATH];
+  let lastErr;
+  for (const path of paths) {
+    const ctrl = new AbortController();
+    // The proxy is known good by now, so give the request the time it needs —
+    // a live web search is slow by nature, not broken.
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (!res.ok) {
+        // Keep whatever the server said. "No provider key configured" is a
+        // fixable instruction; "proxy 500" is a shrug.
+        let detail = "";
+        try {
+          detail = (await res.json()).error || "";
+        } catch (e) {}
+        const err = new Error(detail || "proxy " + res.status);
+        err.status = res.status;
+        err.serverSaid = detail;
+        throw err;
+      }
+      PROXY_STATE = "ok";
+      PROXY_PATH = path;
+      const data = await res.json();
+      if (data && data.schema !== undefined) delete data.schema;
+      return data;
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+    }
+  }
+  /* Only give up on a proxy that isn't there. A 5xx means it exists and is
+     misconfigured — marking it dead would hide the real problem for the rest
+     of the session and silently downgrade every later search. */
+  if (PROXY_STATE !== "ok" && !(lastErr && lastErr.status >= 500)) PROXY_STATE = "dead";
+  throw lastErr || new Error("proxy unavailable");
+}
+
+/* Anthropic adapter. When a schema is requested we force a tool call, which
+   is Anthropic's equivalent of structured output. */
+async function anthropicCall(body, timeoutMs, retries) {
+  const req = {
+    model: body.model || MODELS.smart,
+    max_tokens: body.max_tokens || 1800,
+    messages: body.messages,
+    // Extended thinking eats the output budget and the response gets truncated
+    // before the model reaches its final tool call — the request bills in full
+    // and returns nothing. Never enable without re-measuring.
+    thinking: {
+      type: "disabled"
+    }
+  };
+  if (body.system) req.system = body.system;
+  // Note: no `temperature`. Sonnet 5 rejects it outright ("deprecated for this
+  // model") and the whole request 400s.
+  if (body.tools) req.tools = body.tools;
+  // Live web search on this path too, when the model is allowed to reach it.
+  if (body.search) {
+    req.tools = (req.tools || []).concat([{
+      type: "web_search_20250305",
+      name: "web_search",
+      max_uses: Math.min(Number(body.search.maxUses) || 3, 5)
+    }]);
+  }
+  if (body.schema && !body.tools) {
+    req.tools = [{
+      name: "emit",
+      description: "Return the result.",
+      input_schema: jsonSchemaFor(body.schema)
+    }];
+    // Forcing the tool stops the model searching at all, so only force it when
+    // there is no search to do.
+    if (!body.search) req.tool_choice = {
+      type: "tool",
+      name: "emit"
+    };
+  }
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: buildHeaders(),
+        body: JSON.stringify(req),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (res.status === 401) throw new Error("AUTH");
+      if (res.status === 429 || res.status === 529) {
+        if (attempt === retries) throw new Error(`API ${res.status}`);
+        await new Promise(r => setTimeout(r, 1800 * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const data = await res.json();
+      const tool = (data.content || []).find(c => c.type === "tool_use" && c.name === "emit");
+      if (tool) data.parsed = tool.input && tool.input.items || tool.input;
+      return data;
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.message === "AUTH") throw e;
+      if (attempt === retries) throw e;
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+    }
+  }
+}
+
+// Gemini uses SCREAMING type names; Anthropic wants standard JSON Schema.
+function jsonSchemaFor(g) {
+  const conv = n => {
+    if (!n || typeof n !== "object") return n;
+    const t = String(n.type || "").toLowerCase();
+    const o = {
+      type: t || "string"
+    };
+    if (n.enum) o.enum = n.enum;
+    if (t === "integer") o.type = "integer";
+    if (t === "array") o.items = conv(n.items);
+    if (t === "object") {
+      o.properties = {};
+      for (const k in n.properties || {}) o.properties[k] = conv(n.properties[k]);
+      if (n.required) o.required = n.required;
+    }
+    return o;
+  };
+  // Anthropic tool input must be an object, so an array schema gets wrapped.
+  if (String(g.type).toLowerCase() === "array") {
+    return {
+      type: "object",
+      properties: {
+        items: conv(g)
+      },
+      required: ["items"]
+    };
+  }
+  return conv(g);
+}
+
+/* The single entry point every engine uses. Handles cache, dedupe, pooling
+   and provider fallback so callers only describe what they want. */
+async function apiCall(body, timeoutMs = 60000, retries = 2) {
+  const key = cacheKeyOf(body);
+  // A search means "go and look now". Replaying a stored answer is the one
+  // thing it must never do, however cheap that would be.
+  const hit = body.fresh ? null : aiCache.get(key);
+  if (hit && Date.now() - hit.at < AI_TTL) return hit.value;
+  if (aiInflight.has(key)) return aiInflight.get(key);
+  const p = aiPool(() => transport(body, timeoutMs, retries)).then(v => {
+    if (!body.fresh) aiCache.set(key, {
+      at: Date.now(),
+      value: v
+    });
+    if (aiCache.size > 60) aiCache.delete(aiCache.keys().next().value);
+    aiInflight.delete(key);
+    return v;
+  }, e => {
+    aiInflight.delete(key);
+    throw e;
+  });
+  aiInflight.set(key, p);
+  return p;
+}
+async function transport(body, timeoutMs, retries) {
+  let proxyFault = "";
+  try {
+    // Proxy first: it is the only path where the key is not in the page source.
+    if (PROXY_STATE !== "dead") {
+      try {
+        const r = await proxyCall(body, timeoutMs);
+        setAIHealth("live", "");
+        return r;
+      } catch (e) {
+        // A configuration problem is worth naming exactly — it is a 30-second
+        // fix if you know what it is, and unfindable if you don't.
+        if (e && e.serverSaid) proxyFault = e.serverSaid;else if (e && e.status) proxyFault = "The AI server returned " + e.status + ".";
+        /* One retry for a transient upstream wobble. A 502 here is usually
+           Anthropic rate-limiting or a momentary blip, and dropping straight to
+           the offline library over that is what makes matching feel unreliable.
+           Configuration errors (no key) aren't retried — they won't fix
+           themselves in two seconds. */
+        const worthRetry = e && e.status >= 500 && !/no provider key/i.test(proxyFault);
+        if (worthRetry) {
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            const r2 = await proxyCall(body, timeoutMs);
+            setAIHealth("live", "");
+            return r2;
+          } catch (e2) {
+            if (e2 && e2.serverSaid) proxyFault = e2.serverSaid;
+          }
+        }
+      }
+    }
+    if (API_KEY) {
+      try {
+        const r = await anthropicCall(body, timeoutMs, retries);
+        setAIHealth("live", "");
+        return r;
+      } catch (e) {
+        if (e.message !== "AUTH") throw e;
+      }
+    }
+    if (GEMINI_API_KEY) {
+      // Only the proxy carries the Anthropic key and its live web search. On
+      // the direct-Gemini path the app still matches, but from recall.
+      if (body.search) setAIHealth("nosearch", "Live web search runs on the server. Without it, results come from the model's own knowledge.");
+      return await geminiCall(body, timeoutMs, retries);
+    }
+    /* Keyless Anthropic. This only works inside the Claude.ai preview, which
+       proxies the request for us. In an ordinary browser the call is blocked by
+       CORS before it leaves — it cannot succeed, but it still cost a fetch plus
+       every retry and timeout on top, delaying the offline library that was
+       always going to answer. Check the environment first and fail straight
+       through instead. */
+    if (!inClaudePreview()) throw new Error("No AI provider available.");
+    const r = await anthropicCall(body, timeoutMs, retries);
+    setAIHealth("live", "");
+    return r;
+  } catch (e) {
+    // Don't overwrite a specific diagnosis (quota, auth) with a generic one.
+    if (AI_HEALTH.state !== "quota" && AI_HEALTH.state !== "auth") {
+      if (/no provider key/i.test(proxyFault)) {
+        setAIHealth("noserverkey", "");
+      } else {
+        setAIHealth("down", proxyFault || "Live search couldn't be reached.");
+      }
+    }
+    throw e;
+  }
+}
+const insightQueue = [];
+let insightRunning = false;
+function queueInsight(task) {
+  insightQueue.push(task);
+  if (!insightRunning) drainInsights();
+}
+async function drainInsights() {
+  insightRunning = true;
+  while (insightQueue.length) {
+    const task = insightQueue.shift();
+    try {
+      await task();
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, !API_KEY && GEMINI_API_KEY ? 1200 : 300));
+  }
+  insightRunning = false;
+}
+const LINK_RULE = `LINK RULE - CRITICAL: use ONLY each organization's root homepage URL (e.g. https://example.ca). NEVER sub-pages like /volunteer - they go stale. Root domains are stable.`;
+/* ══════════════════════════════════════════════════════════════
+   BUILT-IN OPPORTUNITY LIBRARY - the guaranteed engine.
+   Real Canadian organizations with national or multi-city reach
+   that welcome youth volunteers. This engine is local and
+   instant: matching can never fail, even fully offline.
+   AI web results stack on top whenever they're available.
+   ══════════════════════════════════════════════════════════════ */
+const BUILTIN_OPPS = {
+  music: [{
+    title: "Music Visits Volunteer",
+    org: "Alzheimer Society of Canada",
+    tagline: "Songs stick around even when memories don't.",
+    desc: "You play or share music with people living with dementia through local programs. Watching someone light up at a song they haven't heard in fifty years honestly never gets old.",
+    hours: "1-2 hrs/week",
+    link: "https://alzheimer.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Youth Arts Program Helper",
+    org: "BGC Canada (Boys & Girls Clubs)",
+    tagline: "Be the reason a kid picks up an instrument.",
+    desc: "Help run after-school music and arts programs at your local club. Roles change from club to club, so check their volunteer page for what's near you.",
+    hours: "2-3 hrs/week",
+    link: "https://bgccan.com",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Recreation & Music Volunteer",
+    org: "YMCA Canada",
+    tagline: "Group singalongs count as cardio, right?",
+    desc: "YMCAs run youth and senior rec programs where music volunteers lead activities and mini performances. Your local Y posts openings on its site.",
+    hours: "2-4 hrs/week",
+    link: "https://ymca.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Community Event Performer",
+    org: "Canadian Red Cross",
+    tagline: "Every community event needs a soundtrack.",
+    desc: "Red Cross branches run events and friendly-visit programs where musical volunteers are always welcome. You apply through their volunteer portal.",
+    hours: "Event-based",
+    link: "https://redcross.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Music Education Supporter",
+    org: "MusiCounts",
+    tagline: "Keep music class alive in Canadian schools.",
+    desc: "Canada's music education charity runs events and campaigns that volunteers help power. If you think every kid deserves band class, this is your people.",
+    hours: "Event-based",
+    link: "https://musicounts.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Seniors' Companion (Music)",
+    org: "United Way / Centraide",
+    tagline: "An hour of music beats an afternoon of silence.",
+    desc: "United Way connects volunteers to local seniors' programs, and music visits are basically gold there. Find your regional office and their listings.",
+    hours: "1-2 hrs/week",
+    link: "https://unitedway.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Library Program Volunteer",
+    org: "Your local public library",
+    tagline: "Story time hits different with a soundtrack.",
+    desc: "Most library systems run kids' programs, teen groups, and community events where musical volunteers stand out. Search your city's library site for volunteer info.",
+    hours: "1-3 hrs/week",
+    link: "https://www.canada.ca/en/services/culture/libraries.html",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Long-Term Care Performance Volunteer",
+    org: "Local long-term care homes",
+    tagline: "The most grateful audience you'll ever play for.",
+    desc: "Almost every care home in Canada takes volunteer performers: piano, strings, vocals, whatever you've got. Just call the volunteer coordinator at one near you.",
+    hours: "1-2 hrs/visit",
+    link: "https://alzheimer.ca",
+    tags: ["youth-friendly", "local"]
+  }],
+  environment: [{
+    title: "Shoreline Cleanup Leader",
+    org: "Ocean Wise Shoreline Cleanup",
+    tagline: "Any shoreline works, even the creek behind your school.",
+    desc: "Canada's biggest citizen conservation program lets you join or straight-up lead cleanups in any city. Site coordinators can be teens, so it's a real leadership role.",
+    hours: "Event-based",
+    link: "https://shorelinecleanup.org",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Conservation Volunteer",
+    org: "Nature Conservancy of Canada",
+    tagline: "Actual hands-in-the-dirt conservation work.",
+    desc: "NCC runs volunteer events across Canada: planting, pulling invasive species, counting wildlife. Their events calendar shows what's happening near you.",
+    hours: "Event-based",
+    link: "https://natureconservancy.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Wetland Conservation Helper",
+    org: "Ducks Unlimited Canada",
+    tagline: "Wetlands quietly do more for the climate than almost anything.",
+    desc: "DUC volunteers support wetland conservation events, education programs, and local chapters across the country.",
+    hours: "Event-based",
+    link: "https://ducks.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Community Greening Volunteer",
+    org: "Evergreen",
+    tagline: "Make your city visibly greener.",
+    desc: "Evergreen runs urban greening and public-space projects, with volunteer days in a bunch of Canadian cities.",
+    hours: "2-4 hrs/event",
+    link: "https://evergreen.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Tree Planting Volunteer",
+    org: "Tree Canada",
+    tagline: "Plant something that outlives everyone you know.",
+    desc: "Tree Canada backs community tree-planting events nationwide. Short commitment, and you can literally point at what you did.",
+    hours: "Event-based",
+    link: "https://treecanada.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Youth Environmental Leader",
+    org: "Scouts Canada",
+    tagline: "Outdoor skills plus service hours in one place.",
+    desc: "Scouts Canada's programs include conservation service projects, and older teens can volunteer as youth leaders.",
+    hours: "2-3 hrs/week",
+    link: "https://scouts.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Conservation Authority Volunteer",
+    org: "Your local conservation authority",
+    tagline: "Your watershed has a to-do list.",
+    desc: "Ontario and many regions have conservation authorities running restoration days, plantings, and citizen science. Search your region's name plus conservation authority volunteer.",
+    hours: "Event-based",
+    link: "https://conservationontario.ca",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Community Garden Helper",
+    org: "Local community gardens",
+    tagline: "Grow food, grow community. Literally.",
+    desc: "Community gardens in nearly every Canadian city want youth volunteers for planting, upkeep, and harvests that often go to local food banks.",
+    hours: "1-3 hrs/week",
+    link: "https://communityfoodcentres.ca",
+    tags: ["youth-friendly", "local"]
+  }],
+  education: [{
+    title: "Youth Literacy Tutor",
+    org: "United for Literacy",
+    tagline: "Reading changes a kid's whole trajectory.",
+    desc: "Canada's national literacy organization trains volunteer tutors for children's reading programs across the country.",
+    hours: "1-2 hrs/week",
+    link: "https://unitedforliteracy.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "STEM Outreach Volunteer",
+    org: "Let's Talk Science",
+    tagline: "Make a 10-year-old love science forever.",
+    desc: "Let's Talk Science runs hands-on STEM outreach in schools and communities, all powered by volunteers. Perfect if science is your thing.",
+    hours: "2-3 hrs/week",
+    link: "https://letstalkscience.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Mentor / Homework Help",
+    org: "Big Brothers Big Sisters of Canada",
+    tagline: "Be the older sibling someone needs.",
+    desc: "BBBS matches volunteers with younger kids for mentorship, including in-school programs. Lots of regions welcome teen mentors.",
+    hours: "1-2 hrs/week",
+    link: "https://bigbrothersbigsisters.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "After-School Program Tutor",
+    org: "BGC Canada (Boys & Girls Clubs)",
+    tagline: "Homework club needs your patience.",
+    desc: "Local clubs run daily after-school homework and enrichment programs where teen tutors genuinely carry the room.",
+    hours: "2-3 hrs/week",
+    link: "https://bgccan.com",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Coding Workshop Helper",
+    org: "Canada Learning Code",
+    tagline: "Teach Python to someone's grandma or someone's kid.",
+    desc: "Volunteer mentors support beginner coding workshops in cities across Canada. If Scratch or Python is your comfort zone, you're qualified.",
+    hours: "Event-based",
+    link: "https://canadalearningcode.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Library Homework Club Volunteer",
+    org: "Your local public library",
+    tagline: "The original tutoring venue.",
+    desc: "Most library systems run homework help and reading buddy programs staffed by teen volunteers. Check your city library's volunteer page.",
+    hours: "1-2 hrs/week",
+    link: "https://www.canada.ca/en/services/culture/libraries.html",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Peer Tutor",
+    org: "Your school board",
+    tagline: "Every school board runs peer tutoring. Join yours.",
+    desc: "School boards across Canada run peer tutoring that counts toward volunteer hours. Ask student services, it's the fastest path to hours that fit your schedule.",
+    hours: "1-3 hrs/week",
+    link: "https://www.ontario.ca/page/education-and-training",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Reading Buddy",
+    org: "United Way / Centraide",
+    tagline: "Twenty minutes of reading, a lifetime of payoff.",
+    desc: "United Way agencies run early-literacy and reading buddy programs in most Canadian cities. Their volunteer portal lists what's open near you.",
+    hours: "1 hr/week",
+    link: "https://unitedway.ca",
+    tags: ["youth-friendly", "national"]
+  }],
+  sports: [{
+    title: "Athlete Program Volunteer",
+    org: "Special Olympics Canada",
+    tagline: "Sport belongs to everybody. Help prove it.",
+    desc: "Special Olympics chapters welcome volunteers for practices, events, and competitions across Canada. Honestly life-changing for everyone involved.",
+    hours: "2-3 hrs/week",
+    link: "https://specialolympics.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Youth Sports Event Volunteer",
+    org: "KidSport Canada",
+    tagline: "Help knock down the cost barrier to sport.",
+    desc: "KidSport chapters run fundraisers and community events so every kid can afford to play. Volunteers make all of it happen.",
+    hours: "Event-based",
+    link: "https://kidsportcanada.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Play Program Helper",
+    org: "Canadian Tire Jumpstart",
+    tagline: "More kids in the game, full stop.",
+    desc: "Jumpstart supports accessible sport programs and community events nationwide, with volunteer roles through partner programs.",
+    hours: "Event-based",
+    link: "https://jumpstart.canadiantire.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Youth Rec Leader",
+    org: "YMCA Canada",
+    tagline: "Endless energy? They can put it to work.",
+    desc: "Local YMCAs need volunteers for youth sports, camps, and rec programs. If you can keep up with a gym full of kids, you'll thrive.",
+    hours: "2-4 hrs/week",
+    link: "https://ymca.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "After-School Sports Volunteer",
+    org: "BGC Canada (Boys & Girls Clubs)",
+    tagline: "Run the drills. High-five everyone. Repeat.",
+    desc: "Clubs run daily sports and active play for kids, and teen coaches and helpers are the backbone of it.",
+    hours: "2-3 hrs/week",
+    link: "https://bgccan.com",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Community Race / Event Crew",
+    org: "Local runs, races & tournaments",
+    tagline: "Every race bib got handed out by a volunteer.",
+    desc: "Charity runs, tournaments, and sports festivals in your city always need event-day people: water stations, registration, course marshals.",
+    hours: "4-6 hrs/event",
+    link: "https://runningroom.com",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Adaptive Sports Assistant",
+    org: "ParaSport Ontario / provincial parasport orgs",
+    tagline: "Adaptive sport is the best coaching education there is.",
+    desc: "Provincial parasport organizations run programs where volunteers assist athletes with disabilities. Search your province's parasport body.",
+    hours: "2-3 hrs/week",
+    link: "https://parasportontario.ca",
+    tags: ["youth-friendly", "regional"]
+  }, {
+    title: "Minor League Assistant Coach",
+    org: "Your local minor sports leagues",
+    tagline: "Every house league needs one more assistant coach.",
+    desc: "Hockey, soccer, baseball, basketball: local leagues take teen assistant coaches and scorekeepers every season. Contact your city's league directly.",
+    hours: "2-4 hrs/week",
+    link: "https://www.canada.ca/en/services/culture/sport.html",
+    tags: ["youth-friendly", "local"]
+  }],
+  business: [{
+    title: "Youth Business Program Volunteer",
+    org: "JA Canada (Junior Achievement)",
+    tagline: "Teach kids the money skills school skips.",
+    desc: "JA delivers financial literacy and entrepreneurship programs in schools nationwide, and student volunteers help run programs and events.",
+    hours: "Event-based",
+    link: "https://jacanada.org",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "DECA Chapter Leader",
+    org: "DECA Ontario / DECA Canada",
+    tagline: "Business competitions run by students, for students.",
+    desc: "Start or grow your school's DECA chapter. Organizing, mentoring newer members, and running events builds real leadership and counts as service.",
+    hours: "2-3 hrs/week",
+    link: "https://deca.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Financial Literacy Peer Educator",
+    org: "Your school or community centre",
+    tagline: "You get TFSAs. Most adults don't. Share.",
+    desc: "Run peer money-skills workshops through your school, library, or community centre: budgeting, saving, first-job finances.",
+    hours: "1-2 hrs/week",
+    link: "https://ymca.ca",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Charity Event Organizer",
+    org: "United Way / Centraide",
+    tagline: "Every fundraiser is a startup with a deadline.",
+    desc: "United Way agencies welcome volunteers who can organize, promote, and run fundraising campaigns and events.",
+    hours: "Event-based",
+    link: "https://unitedway.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Nonprofit Operations Helper",
+    org: "Food Banks Canada network",
+    tagline: "Food banks run on logistics as much as generosity.",
+    desc: "Local food banks need organized minds as much as strong backs: sorting systems, inventory, drive coordination. A business brain is an asset here.",
+    hours: "2-4 hrs/week",
+    link: "https://foodbankscanada.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "ReStore Volunteer",
+    org: "Habitat for Humanity Canada",
+    tagline: "Retail that builds houses.",
+    desc: "Habitat ReStores take volunteers (often 16+) for retail operations that fund home building. A solid intro to social enterprise.",
+    hours: "3-4 hrs/week",
+    link: "https://habitat.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Marketing & Social Media Volunteer",
+    org: "Local charities & nonprofits",
+    tagline: "Every small nonprofit needs someone who gets Instagram.",
+    desc: "Small charities in your city genuinely need help with social media, posters, and outreach. You'd be offering a skill most of their team doesn't have.",
+    hours: "1-3 hrs/week",
+    link: "https://volunteer.ca",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "School Fundraiser Lead",
+    org: "Your school's student council",
+    tagline: "Pitch it, plan it, run it, count the money.",
+    desc: "Leading a school fundraising campaign for a local charity is real entrepreneurship, and schools count the organizing hours.",
+    hours: "Varies",
+    link: "https://jacanada.org",
+    tags: ["youth-friendly", "local"]
+  }],
+  community: [{
+    /* Added after opening each of these sites and confirming every link
+       resolves. The two Brantford entries are deliberately specific rather than
+       national: a student can act on them this week, and they bracket the age
+       range usefully. The library takes anyone who has finished Grade 8, which
+       covers most of RISE's 14 year olds; the food bank starts at 16. Saying
+       both plainly is the point, because the door is the worst place to find
+       out you are too young. */
+    title: "Youth Volunteer",
+    org: "Brantford Public Library",
+    tagline: "Tell a library what teenagers actually want from it.",
+    desc: "You complete short Youth Gigs, give staff a teenage read on what the library buys and runs, and help shape teen programs. The only qualification listed is having finished Grade 8, which makes this one of the easiest real roles to start with.",
+    hours: "1-2 hrs/week",
+    link: "https://www.brantfordlibrary.ca/about-the-library/support-your-library/volunteering/",
+    applyLink: "https://forms.brantfordlibrary.ca/Volunteer-Application",
+    minAge: 13,
+    screening: "None listed",
+    tags: ["youth-friendly", "brantford", "no-experience"]
+  }, {
+    title: "Food Bank Volunteer",
+    org: "Brantford Food Bank (Community Resource Service)",
+    tagline: "Sorting, stocking, and handing groceries to neighbours.",
+    desc: "The Brantford Food Bank runs under Community Resource Service, so the intake lives on the CRS site and applications go through their BetterImpact portal. Students wanting summer shifts are asked to apply by June 1 and commit to one shift a week through July and August.",
+    hours: "1 shift/week",
+    link: "https://crs-help.ca/volunteer",
+    applyLink: "https://app.betterimpact.com/Application?ApplicationFormNumber=1&OrganizationGuid=9529f3c4-e3a1-4858-bcf0-19f37931f03c",
+    minAge: 16,
+    screening: "Vulnerable sector check, two non-family references",
+    tags: ["brantford", "food-security"]
+  }, {
+    title: "Find your local food bank",
+    org: "Food Banks Canada",
+    tagline: "Almost every town has one, and most are short-handed.",
+    desc: "If you are not in Brantford, this finder lists member food banks across the country. Sorting and stocking shifts rarely need experience, though each location sets its own minimum age, so check the one near you before counting on it.",
+    hours: "2-4 hrs/week",
+    link: "https://foodbankscanada.ca/find-a-food-bank/",
+    screening: "Varies by location",
+    tags: ["national", "food-security", "no-experience"]
+  }, {
+    title: "Tech Mentor for Seniors",
+    org: "Cyber-Seniors",
+    tagline: "Teach FaceTime. Change a grandparent's life.",
+    desc: "Cyber-Seniors pairs teen volunteers with older adults for one-on-one tech help: video calls, email, apps. You can even do it virtually from home.",
+    hours: "1-2 hrs/week",
+    link: "https://cyberseniors.org",
+    contactEmail: "info@cyberseniors.org",
+    tags: ["youth-friendly", "virtual", "national"]
+  }, {
+    title: "Food Bank Volunteer",
+    org: "Food Banks Canada network",
+    tagline: "About as direct as helping gets.",
+    desc: "Local food banks need sorters, packers, and organizers all year. Find your community's food bank through the national network.",
+    hours: "2-4 hrs/week",
+    link: "https://foodbankscanada.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Friendly Visitor / Events Volunteer",
+    org: "Canadian Red Cross",
+    tagline: "Just showing up is an underrated superpower.",
+    desc: "Red Cross community programs include friendly visits, events, and emergency-preparedness support. Roles vary by branch.",
+    hours: "1-3 hrs/week",
+    link: "https://redcross.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Buddy Program Volunteer",
+    org: "Best Buddies Canada",
+    tagline: "One real friendship, one hour a week.",
+    desc: "Best Buddies pairs volunteers with peers who have intellectual and developmental disabilities for genuine one-on-one friendship. School chapters exist across Canada.",
+    hours: "1 hr/week",
+    link: "https://bestbuddies.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Community Kitchen Helper",
+    org: "Community Food Centres Canada",
+    tagline: "Good food is community glue.",
+    desc: "Community food centres run meal programs, gardens, and food-skills classes powered by volunteers in cities across the country.",
+    hours: "2-3 hrs/week",
+    link: "https://communityfoodcentres.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Hospital Volunteer",
+    org: "Your local hospital",
+    tagline: "Every hospital runs on its volunteer team.",
+    desc: "Most Canadian hospitals take volunteers around 15-16+, for wayfinding, friendly visiting, and program support. Apply through your hospital's volunteer services page.",
+    hours: "3-4 hrs/week",
+    link: "https://healthcarecan.ca",
+    tags: ["youth-friendly", "local"]
+  }, {
+    title: "Humane Society Volunteer",
+    org: "Humane Canada member societies",
+    tagline: "Dogs need walking. Cats need socializing. You're qualified.",
+    desc: "Local humane societies and SPCAs welcome youth volunteers for animal care and events. Age minimums vary by location.",
+    hours: "2-3 hrs/week",
+    link: "https://humanecanada.ca",
+    tags: ["youth-friendly", "national"]
+  }, {
+    title: "Volunteer Match Explorer",
+    org: "Volunteer Canada",
+    tagline: "The national directory of everything else.",
+    desc: "Volunteer Canada connects you to volunteer centres in every region, each listing dozens of local openings. A rabbit hole that always pays off.",
+    hours: "Varies",
+    link: "https://volunteer.ca",
+    tags: ["youth-friendly", "national"]
+  }]
+};
+
+/* ══════════════════════════════════════════════════════════════════
+   GLOBAL LIBRARY — born in Canada, reaching the world.
+
+   The library above is Canadian, which meant the offline fallback could
+   only ever offer local work — the global half of the promise depended
+   entirely on live search being up. These are real organizations that
+   take remote contributions from anywhere, so a student in Regina can
+   serve a cause on the other side of the world without leaving home.
+
+   Remote-first on purpose. Placement programs that fly minors abroad
+   are a different thing with real safeguarding questions attached, and
+   they are not something to put in a list a 14-year-old browses alone.
+   ══════════════════════════════════════════════════════════════════ */
+const GLOBAL_OPPS = {
+  education: [{
+    title: "Article Translator or Copy Editor",
+    org: "Wikipedia / Wikimedia",
+    tagline: "Write something a few thousand strangers will read.",
+    desc: "Translate or improve articles in any language you speak. Wikipedia's coverage in most languages other than English is thin, so the gap you fill is real and measurable.",
+    hours: "Flexible",
+    link: "https://wikipedia.org",
+    tags: ["remote", "global", "languages"]
+  }, {
+    title: "Volunteer Content Translator",
+    org: "Translators without Borders / CLEAR Global",
+    tagline: "Crisis information only helps if people can read it.",
+    desc: "Translate health, crisis and humanitarian material into languages that need it. They run a supported onboarding, so being early in a language is not a blocker.",
+    hours: "Flexible",
+    link: "https://clearglobal.org",
+    tags: ["remote", "global", "languages"]
+  }, {
+    title: "Open Textbook Contributor",
+    org: "OpenStax / CK-12 Foundation",
+    tagline: "Free textbooks for students who can't buy any.",
+    desc: "Help write practice problems, worked solutions and explanations for free science and maths textbooks used across the world.",
+    hours: "Flexible",
+    link: "https://openstax.org",
+    tags: ["remote", "global"]
+  }],
+  environment: [{
+    title: "Wildlife Image Classifier",
+    org: "Zooniverse",
+    tagline: "Real research that stalls without volunteers.",
+    desc: "Tag animals in camera-trap footage, transcribe field notebooks, or map coastlines for active research projects. Your classifications end up in published papers.",
+    hours: "Flexible",
+    link: "https://zooniverse.org",
+    tags: ["remote", "global", "citizen-science"]
+  }, {
+    title: "Biodiversity Observer",
+    org: "iNaturalist / GBIF",
+    tagline: "The species in your own neighbourhood are data.",
+    desc: "Photograph and identify wildlife wherever you are. Records feed a global biodiversity database that researchers actually query.",
+    hours: "Flexible",
+    link: "https://inaturalist.org",
+    tags: ["remote", "global", "citizen-science"]
+  }, {
+    title: "Map Contributor, Disaster Response",
+    org: "Humanitarian OpenStreetMap Team",
+    tagline: "Aid teams can't reach places that aren't on a map.",
+    desc: "Trace buildings and roads from satellite imagery for regions hit by disaster or disease outbreak. Volunteers do the mapping that relief organizations navigate by.",
+    hours: "Flexible",
+    link: "https://hotosm.org",
+    tags: ["remote", "global"]
+  }],
+  tech: [{
+    title: "Open Source Contributor",
+    org: "Public code projects on GitHub",
+    tagline: "Your first pull request is closer than you think.",
+    desc: "Many projects tag issues as good-first-issue specifically for newcomers. Documentation fixes count, and are how most contributors start.",
+    hours: "Flexible",
+    link: "https://github.com",
+    tags: ["remote", "global"]
+  }, {
+    title: "Book Digitiser and Proofreader",
+    org: "Project Gutenberg / Distributed Proofreaders",
+    tagline: "Keeping public-domain books free, one page at a time.",
+    desc: "Proofread a page at a time to turn scanned public-domain books into clean free ebooks. The unit of work is small enough to do between classes.",
+    hours: "Flexible",
+    link: "https://pgdp.net",
+    tags: ["remote", "global"]
+  }],
+  community: [{
+    title: "Audiobook Narrator",
+    org: "LibriVox",
+    tagline: "Read a chapter aloud. Someone, somewhere, listens to it.",
+    desc: "Record public-domain books as free audiobooks in any language. You claim one chapter at a time, so a single section is a complete contribution.",
+    hours: "Flexible",
+    link: "https://librivox.org",
+    tags: ["remote", "global", "languages"]
+  }, {
+    title: "Image Describer for Blind Readers",
+    org: "Be My Eyes / Bookshare",
+    tagline: "Sight, lent out by the minute.",
+    desc: "Volunteers describe images and assist blind and low-vision people through their phone. Calls are short and you take them when you're free.",
+    hours: "Flexible",
+    link: "https://bemyeyes.com",
+    tags: ["remote", "global"]
+  }, {
+    title: "Youth Delegate or Local Chapter Volunteer",
+    org: "United Nations Volunteers / UN Association",
+    tagline: "Global programmes with real youth tracks.",
+    desc: "UNV runs online volunteering assignments with organizations worldwide, and UN Associations run youth chapters in most countries. Some assignments have age floors, so read the posting.",
+    hours: "Varies",
+    link: "https://onlinevolunteering.org",
+    tags: ["remote", "global"]
+  }]
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   MATCH SCORING ENGINE  (deterministic, runs over real data)
+   The heart of the overhaul: instead of asking an LLM to invent
+   opportunities, we SCORE real candidates against exactly what the user
+   selected. Specificity comes from math over verifiable attributes, not
+   prompt wording. The AI only (a) finds more real candidates via web
+   search and (b) writes the human explanation.
+═══════════════════════════════════════════════════════════════════ */
+
+// ── Profile interests: a broad, human taxonomy for the profile page ──
+// These personalise matching. Each maps to keywords the scorer already understands.
+const PROFILE_INTERESTS = [{
+  id: "travel",
+  label: "Travel",
+  emoji: "✈️"
+}, {
+  id: "gaming",
+  label: "Gaming",
+  emoji: "🎮"
+}, {
+  id: "business",
+  label: "Business",
+  emoji: "💼"
+}, {
+  id: "music",
+  label: "Music",
+  emoji: "🎵"
+}, {
+  id: "art",
+  label: "Art & Design",
+  emoji: "🎨"
+}, {
+  id: "sports",
+  label: "Sports & Fitness",
+  emoji: "⚽"
+}, {
+  id: "coding",
+  label: "Coding & Tech",
+  emoji: "💻"
+}, {
+  id: "science",
+  label: "Science",
+  emoji: "🔬"
+}, {
+  id: "environment",
+  label: "Environment",
+  emoji: "🌱"
+}, {
+  id: "animals",
+  label: "Animals",
+  emoji: "🐾"
+}, {
+  id: "reading",
+  label: "Reading & Writing",
+  emoji: "📚"
+}, {
+  id: "film",
+  label: "Film & Media",
+  emoji: "🎬"
+}, {
+  id: "cooking",
+  label: "Cooking & Food",
+  emoji: "🍳"
+}, {
+  id: "fashion",
+  label: "Fashion",
+  emoji: "👗"
+}, {
+  id: "photography",
+  label: "Photography",
+  emoji: "📸"
+}, {
+  id: "volunteering",
+  label: "Community Service",
+  emoji: "🤝"
+}, {
+  id: "health",
+  label: "Health & Medicine",
+  emoji: "⚕️"
+}, {
+  id: "politics",
+  label: "Politics & Advocacy",
+  emoji: "🗳️"
+}, {
+  id: "languages",
+  label: "Languages",
+  emoji: "🗣️"
+}, {
+  id: "entrepreneurship",
+  label: "Entrepreneurship",
+  emoji: "🚀"
+}, {
+  id: "history",
+  label: "History & Culture",
+  emoji: "🏛️"
+}, {
+  id: "dance",
+  label: "Dance & Theatre",
+  emoji: "🎭"
+}, {
+  id: "mentoring",
+  label: "Mentoring",
+  emoji: "🎓"
+}, {
+  id: "seniors",
+  label: "Helping Seniors",
+  emoji: "👵"
+}];
+const INTEREST_KEYWORDS = {
+  travel: ["travel", "abroad", "cultural", "tourism", "international"],
+  gaming: ["game", "gaming", "esports", "coding", "tech", "digital"],
+  business: ["business", "finance", "marketing", "entrepreneur", "fundrais", "operations"],
+  music: ["music", "instrument", "choir", "band", "perform", "singalong"],
+  art: ["art", "design", "mural", "craft", "creative", "paint"],
+  sports: ["sport", "coach", "fitness", "athletic", "team", "recreation"],
+  coding: ["coding", "computer", "robotics", "tech", "programming", "stem", "digital"],
+  science: ["science", "stem", "research", "lab", "environment", "survey"],
+  environment: ["environment", "conservation", "climate", "garden", "cleanup", "tree", "nature"],
+  animals: ["animal", "wildlife", "shelter", "humane", "spca", "conservation"],
+  reading: ["literacy", "reading", "writing", "book", "library", "tutor"],
+  film: ["film", "media", "video", "photography", "production", "creative"],
+  cooking: ["food", "kitchen", "meal", "cooking", "pantry", "hamper"],
+  fashion: ["design", "creative", "art", "textile", "event"],
+  photography: ["photography", "media", "creative", "event", "documenting"],
+  volunteering: ["community", "volunteer", "support", "outreach", "help"],
+  health: ["health", "hospital", "wellbeing", "care", "medical", "senior"],
+  politics: ["advocacy", "policy", "community", "outreach", "campaign", "civic"],
+  languages: ["language", "esl", "newcomer", "translation", "settlement", "literacy"],
+  entrepreneurship: ["entrepreneur", "business", "startup", "innovation", "fundrais"],
+  history: ["history", "museum", "culture", "heritage", "archive", "community"],
+  dance: ["dance", "theatre", "perform", "arts", "choreograph", "stage"],
+  mentoring: ["mentor", "tutor", "coach", "buddy", "youth", "peer"],
+  seniors: ["senior", "elder", "companion", "long-term care", "retirement", "memory"]
+};
+const CAP_KEYWORDS = {
+  "music-a": ["guitar", "ukulele", "piano", "keyboard", "accompan", "singalong", "sing-along", "busk"],
+  "music-b": ["vocal", "sing", "choir", "voice", "a cappella", "perform"],
+  "music-c": ["recital", "classical", "orchestra", "ensemble", "string", "band", "instrument", "concert"],
+  "environment-a": ["planting", "cleanup", "clean-up", "restoration", "invasive", "shoreline", "trail", "tree", "garden", "field"],
+  "environment-b": ["survey", "data", "monitoring", "citizen science", "water quality", "species", "count", "record"],
+  "environment-c": ["education", "workshop", "outreach", "teach", "presentation", "public", "interpret"],
+  "education-a": ["math", "science", "physics", "chemistry", "tutor", "homework", "stem"],
+  "education-b": ["literacy", "reading", "writing", "english", "esl", "language", "book"],
+  "education-c": ["coding", "computer", "robotics", "tech", "programming", "digital", "stem club"],
+  "sports-a": ["coach", "drill", "practice", "fundamental", "instruct", "train", "team"],
+  "sports-b": ["referee", "official", "scorekeep", "score", "equipment", "tournament", "game day", "game-day"],
+  "sports-c": ["adaptive", "inclusive", "disability", "para", "special olympics", "accessible"],
+  "business-a": ["financial", "budget", "money", "literacy", "saving", "finance"],
+  "business-b": ["fundrais", "event", "campaign", "sponsor", "donation", "gala"],
+  "business-c": ["marketing", "social media", "operations", "design", "organize", "admin", "inventory"],
+  "community-a": ["tech", "device", "digital", "senior", "app", "video call", "computer help"],
+  "community-b": ["food", "sort", "pack", "distribut", "inventory", "logistics", "hamper", "pantry"],
+  "community-c": ["companion", "visit", "listen", "one-on-one", "buddy", "friendly", "support"]
+};
+const SERVE_KEYWORDS = {
+  children: ["child", "kid", "youth", "elementary", "after-school", "after school", "young"],
+  teens: ["teen", "youth", "peer", "high school", "high-school", "adolescent"],
+  seniors: ["senior", "elder", "older adult", "dementia", "memory", "long-term care", "retirement", "aging"],
+  disability: ["disabilit", "adaptive", "special needs", "accessible", "inclusive", "autism", "para"],
+  newcomers: ["newcomer", "refugee", "immigrant", "settlement", "esl", "english language"],
+  lowincome: ["low-income", "low income", "food bank", "shelter", "poverty", "homeless", "hamper"],
+  animals: ["animal", "wildlife", "shelter", "humane", "spca", "dog", "cat", "conservation"],
+  any: []
+};
+/* Organization names arrive in whatever form the model felt like that call:
+   "Immigrant Services Society of British Columbia (ISSofBC)" and
+   "ISSofBC (Immigrant Services Society of British Columbia)" are the same
+   charity, and the old key — lowercase and trim — treated them as two, so the
+   same organization could appear twice in one result list.
+
+   This strips the parenthetical alias, punctuation, and the boilerplate words
+   that carry no identifying information, then keeps the alphabetised token set
+   so word order can't fool it either. */
+const ORG_NOISE = /\b(the|of|and|for|inc|incorporated|ltd|limited|llc|society|association|foundation|charity|charitable|organization|organisation|canada|canadian|national|international|group|centre|center|services|service)\b/g;
+function orgKey(name) {
+  let s = String(name || "").toLowerCase();
+  // "Full Name (ALIAS)" and "ALIAS (Full Name)" collapse to the same tokens
+  // once the brackets and their contents are folded in rather than dropped.
+  s = s.replace(/[()\[\]]/g, " ");
+  s = s.replace(/[^a-z0-9\s]/g, " ");
+  s = s.replace(ORG_NOISE, " ");
+  const toks = s.split(/\s+/).filter(Boolean);
+  if (!toks.length) return String(name || "").toLowerCase().trim();
+  // Acronyms often survive as one long token ("issofbc"); sorting the set means
+  // "issofbc immigrant british columbia" matches regardless of arrangement.
+  return Array.from(new Set(toks)).sort().join(" ");
+}
+function textOf(o) {
+  return `${o.title || ""} ${o.org || ""} ${o.role || ""} ${o.desc || ""} ${o.tagline || ""} ${o.whyMatch || ""} ${(o.tags || []).join(" ")}`.toLowerCase();
+}
+function scoreMatch(opp, profile) {
+  const hay = textOf(opp);
+  let score = 0;
+  const reasons = [];
+  let capHits = 0,
+    capTotal = 0;
+  (profile.caps || []).forEach(capId => {
+    const kws = CAP_KEYWORDS[capId] || [];
+    if (!kws.length) return;
+    capTotal++;
+    if (kws.some(k => hay.includes(k))) capHits++;
+  });
+  if (capTotal > 0) {
+    score += Math.round(capHits / capTotal * 45);
+    if (capHits > 0) reasons.push("capability");
+  }
+  const serves = (profile.serve || []).filter(s => s !== "any");
+  if (serves.length) {
+    let sHit = false;
+    serves.forEach(s => {
+      if ((SERVE_KEYWORDS[s] || []).some(k => hay.includes(k))) sHit = true;
+    });
+    if (sHit) {
+      score += 25;
+      reasons.push("population");
+    }
+  } else {
+    score += 10;
+  }
+  if (profile.detail) {
+    const words = profile.detail.toLowerCase().split(/[^a-z]+/).filter(w => w.length > 3);
+    const hits = words.filter(w => hay.includes(w)).length;
+    if (hits) {
+      score += Math.min(15, hits * 5);
+      reasons.push("detail");
+    }
+  }
+  if (profile.virtualOnly) {
+    if (/virtual|remote|online|from home|from-home/.test(hay)) {
+      score += 8;
+      reasons.push("virtual");
+    } else {
+      score -= 20;
+    }
+  }
+  if (profile.locShort) {
+    const ls = profile.locShort.toLowerCase();
+    if (hay.includes(ls)) {
+      score += 7;
+      reasons.push("local");
+    } else if ((opp.tags || []).includes("local") || (opp.tags || []).includes("regional")) {
+      score += 3;
+    }
+  }
+  // Profile interests give a gentle personalisation nudge (up to 12 pts).
+  if (profile.interests && profile.interests.length) {
+    let iHits = 0;
+    profile.interests.forEach(id => {
+      const kws = typeof INTEREST_KEYWORDS !== "undefined" && INTEREST_KEYWORDS[id] || [];
+      if (kws.some(k => hay.includes(k))) iHits++;
+    });
+    if (iHits > 0) {
+      score += Math.min(12, iHits * 6);
+      reasons.push("interest");
+    }
+  }
+  return {
+    score: Math.max(0, score),
+    reasons
+  };
+}
+/* ── Specificity gate ──
+   A match names a role. An idea names a category. This rejects the second
+   kind before it ever reaches the student, because "Music Volunteer at the
+   YMCA" is not something you can act on — it's a prompt to go do research,
+   which is the work RISE is supposed to have already done.
+
+   Curated library entries are exempt: they are deliberately broad starting
+   points and the UI labels them as such. */
+const VAGUE_TITLES = /^(general |community |youth |student |summer |seasonal )?(volunteer|helper|assistant|supporter|participant|member|opportunit(y|ies))s?$/i;
+const VAGUE_PHRASES = /\b(help out|helping out|support the team|various tasks|as needed|make a difference|get involved|give back|wide range of|all kinds of|and more)\b/i;
+function specificityIssues(o, profile) {
+  const issues = [];
+  const title = (o.title || "").trim();
+  // "Volunteer", "Music Volunteer", "Youth Helper" — a category, not a post.
+  if (VAGUE_TITLES.test(title) || title.split(/\s+/).length < 2) issues.push("title");
+  const duties = (o.role || o.desc || "").trim();
+  if (duties.length < 60) issues.push("duties");
+  if (VAGUE_PHRASES.test(duties)) issues.push("filler");
+  // The whole promise of the product is that the reason references THEM.
+  const why = (o.whyMatch || "").toLowerCase();
+  if (why) {
+    const capWords = String(profile.capText || "").toLowerCase().split(/[^a-z]+/).filter(w => w.length > 4);
+    if (capWords.length && !capWords.some(w => why.includes(w))) issues.push("generic-why");
+  }
+  return issues;
+}
+function rankMatches(candidates, profile, opts = {}) {
+  const min = opts.min != null ? opts.min : 15;
+  const seen = new Set();
+  const scored = [];
+  for (const o of candidates) {
+    if (!o || !o.org) continue;
+    const key = orgKey(o.org) + "|" + (o.title || "").toLowerCase().trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const {
+      score,
+      reasons
+    } = scoreMatch(o, profile);
+    if (score < min) continue;
+    // AI-generated results must be role-level. Curated library entries are
+    // exempt — they're labelled as starting points, not matches.
+    const issues = o._curated ? [] : specificityIssues(o, profile);
+    if (issues.length >= 2) continue;
+    scored.push({
+      ...o,
+      _score: score,
+      _reasons: reasons,
+      _vague: issues
+    });
+  }
+  scored.sort((a, b) => b._score - a._score);
+  return scored;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   IMPACT ENGINE  (deterministic, offline-safe, pure functions)
+   Turns raw logged hours into: a transparent blended Impact Score,
+   consistency/streak metrics, and unlockable SDG-aligned badges.
+   Every value is computed from real entries only — no fabrication,
+   and it degrades to sensible zeros when there is no data.
+═══════════════════════════════════════════════════════════════════ */
+
+// Map a logged project string to a UN SDG-aligned category id.
+function categorizeEntry(e) {
+  const t = (e && e.project || "").toLowerCase();
+  if (/music|perform|art|choir|band/.test(t)) return "arts";
+  if (/environment|conservation|climate|garden|clean|tree|nature/.test(t)) return "climate";
+  if (/tutor|stem|mentor|education|teach|literacy|read|homework/.test(t)) return "education";
+  if (/food|kitchen|hunger|meal|pantry|shelter|hamper/.test(t)) return "hunger";
+  if (/athletic|coach|sport|fitness/.test(t)) return "health";
+  if (/financ|budget|business|entrepreneur|money/.test(t)) return "economy";
+  if (/senior|tech support|companion|elder|disab|inclus/.test(t)) return "community";
+  return "community";
+}
+
+// Date-only strings need the T00:00 suffix or they're parsed as UTC and can
+// render as the previous day west of Greenwich — which is all of Canada.
+function fmtDate(d) {
+  if (!d) return "";
+  try {
+    return new Date(d + "T00:00").toLocaleDateString("en-CA", {
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    });
+  } catch (e) {
+    return d;
+  }
+}
+
+// ISO week key (year-week) for streak math.
+function isoWeekKey(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  if (isNaN(d)) return null;
+  const day = (d.getDay() + 6) % 7; // Mon=0
+  d.setDate(d.getDate() - day + 3);
+  const firstThu = new Date(d.getFullYear(), 0, 4);
+  const week = 1 + Math.round(((d - firstThu) / 86400000 - 3 + (firstThu.getDay() + 6) % 7) / 7);
+  return d.getFullYear() + "-W" + String(week).padStart(2, "0");
+}
+
+// Longest and current run of consecutive active weeks.
+function streaks(entries) {
+  const weeks = Array.from(new Set((entries || []).map(e => isoWeekKey(e.date)).filter(Boolean))).sort();
+  if (!weeks.length) return {
+    current: 0,
+    longest: 0,
+    activeWeeks: 0
+  };
+  const idx = w => {
+    const [y, wk] = w.split("-W");
+    return parseInt(y) * 53 + parseInt(wk);
+  };
+  let longest = 1,
+    run = 1;
+  for (let i = 1; i < weeks.length; i++) {
+    if (idx(weeks[i]) - idx(weeks[i - 1]) === 1) {
+      run++;
+      longest = Math.max(longest, run);
+    } else run = 1;
+  }
+  // current run: does the streak reach the most recent active week, counting back?
+  let current = 1;
+  for (let i = weeks.length - 1; i > 0; i--) {
+    if (idx(weeks[i]) - idx(weeks[i - 1]) === 1) current++;else break;
+  }
+  return {
+    current,
+    longest,
+    activeWeeks: weeks.length
+  };
+}
+
+// THE IMPACT SCORE — transparent, shown to the user.
+// Base = total hours. Multiplier rewards consistency (regular weeks + streaks)
+// so long-term habits beat a single binge. Fully explainable in the UI.
+function impactScore(entries) {
+  const list = entries || [];
+  const totalHours = list.reduce((s, e) => s + (Number(e.hours) || 0), 0);
+  const {
+    current,
+    longest,
+    activeWeeks
+  } = streaks(list);
+  // consistency multiplier: 1.0 baseline, up to ~1.6 for strong regular habits
+  const weekBonus = Math.min(0.35, activeWeeks * 0.03); // breadth of engagement
+  const streakBonus = Math.min(0.25, longest * 0.05); // sustained runs
+  const multiplier = +(1 + weekBonus + streakBonus).toFixed(2);
+  const score = Math.round(totalHours * multiplier);
+  return {
+    score,
+    totalHours: +totalHours.toFixed(1),
+    multiplier,
+    current,
+    longest,
+    activeWeeks,
+    weekBonus: +weekBonus.toFixed(2),
+    streakBonus: +streakBonus.toFixed(2)
+  };
+}
+
+// Hours accumulated per SDG category (for category badges + dashboard chart).
+function categoryHours(entries) {
+  const out = {};
+  (entries || []).forEach(e => {
+    const c = categorizeEntry(e);
+    out[c] = (out[c] || 0) + (Number(e.hours) || 0);
+  });
+  return out;
+}
+
+// SDG-aligned category badge definitions (colour + short identity line).
+const SDG_BADGES = [{
+  id: "climate",
+  name: "Climate Champion",
+  sdg: "SDG 13",
+  color: "#3F7E44",
+  hours: 3,
+  blurb: "Hours protecting the planet."
+}, {
+  id: "education",
+  name: "Education Advocate",
+  sdg: "SDG 4",
+  color: "#C5192D",
+  hours: 3,
+  blurb: "Hours helping others learn."
+}, {
+  id: "hunger",
+  name: "Hunger Fighter",
+  sdg: "SDG 2",
+  color: "#DDA63A",
+  hours: 3,
+  blurb: "Hours tackling food insecurity."
+}, {
+  id: "health",
+  name: "Wellbeing Coach",
+  sdg: "SDG 3",
+  color: "#4C9F38",
+  hours: 3,
+  blurb: "Hours building healthy communities."
+}, {
+  id: "economy",
+  name: "Opportunity Builder",
+  sdg: "SDG 8",
+  color: "#A21942",
+  hours: 3,
+  blurb: "Hours growing economic skills."
+}, {
+  id: "arts",
+  name: "Culture Maker",
+  sdg: "SDG 11",
+  color: "#FD9D24",
+  hours: 3,
+  blurb: "Hours enriching community life."
+}, {
+  id: "community",
+  name: "Community Pillar",
+  sdg: "SDG 10/11",
+  color: "#DD1367",
+  hours: 3,
+  blurb: "Hours strengthening belonging."
+}];
+
+// Milestone badges reward the grind, independent of category.
+const MILESTONE_BADGES = [{
+  id: "first",
+  name: "First Step",
+  color: "#D6560C",
+  test: s => s.count >= 1,
+  blurb: "Logged your first activity."
+}, {
+  id: "h10",
+  name: "Ten & Counting",
+  color: "#E8681A",
+  test: s => s.totalHours >= 10,
+  blurb: "Reached 10 verified hours."
+}, {
+  id: "h25",
+  name: "Quarter Century",
+  color: "#F97316",
+  test: s => s.totalHours >= 25,
+  blurb: "Reached 25 verified hours."
+}, {
+  id: "h50",
+  name: "Half Hundred",
+  color: "#C5192D",
+  test: s => s.totalHours >= 50,
+  blurb: "Reached 50 verified hours."
+}, {
+  id: "streak4",
+  name: "Consistent Four",
+  color: "#3F7E44",
+  test: s => s.longest >= 4,
+  blurb: "Volunteered 4 weeks in a row."
+}, {
+  id: "goal",
+  name: "Goal Crusher",
+  color: "#1A6B3C",
+  test: s => s.goalMet,
+  blurb: "Hit your service-hour goal."
+}];
+
+// Compute unlocked/locked state for every badge from real data.
+function computeBadges(entries, goal) {
+  const catH = categoryHours(entries);
+  const sc = impactScore(entries);
+  const summary = {
+    count: (entries || []).length,
+    totalHours: sc.totalHours,
+    longest: sc.longest,
+    goalMet: goal ? sc.totalHours >= goal : false
+  };
+  const category = SDG_BADGES.map(b => ({
+    ...b,
+    kind: "category",
+    progress: Math.min(1, (catH[b.id] || 0) / b.hours),
+    have: (catH[b.id] || 0) >= b.hours,
+    earnedHours: +(catH[b.id] || 0).toFixed(1)
+  }));
+  const milestone = MILESTONE_BADGES.map(b => ({
+    ...b,
+    kind: "milestone",
+    have: !!b.test(summary)
+  }));
+  return {
+    category,
+    milestone,
+    unlocked: [...category, ...milestone].filter(b => b.have).length
+  };
+}
+
+// Instant local engine - cannot fail, works offline, honours the dedupe set
+// Gather every library candidate across ALL selected talents, for the scorer.
+/* Pick the pool that matches where they want to serve. A student who chose
+   remote or a region abroad should not be handed "your local YMCA branch" —
+   that was the offline library's whole vocabulary before. */
+function globalPool(talentIds) {
+  const ids = talentIds && talentIds.length ? talentIds : [];
+  const out = [];
+  const seen = new Set();
+  const take = list => (list || []).forEach(o => {
+    if (seen.has(o.org)) return;
+    seen.add(o.org);
+    out.push(o);
+  });
+  // Their own categories first, then the rest — the global pool is small
+  // enough that an off-category remote role still beats nothing.
+  ids.forEach(tid => take(GLOBAL_OPPS[tid]));
+  Object.keys(GLOBAL_OPPS).forEach(k => take(GLOBAL_OPPS[k]));
+  return out;
+}
+function libraryCandidates(talentIds, cityShort, opts = {}) {
+  const global = !!opts.global;
+  const out = [];
+  if (global) {
+    globalPool(talentIds).forEach(o => out.push({
+      ...o,
+      where: o.where || "Remote — from anywhere",
+      _curated: true
+    }));
+    return out;
+  }
+  const ids = talentIds && talentIds.length ? talentIds : Object.keys(BUILTIN_OPPS);
+  ids.forEach(tid => {
+    (BUILTIN_OPPS[tid] || []).forEach(o => {
+      out.push({
+        ...o,
+        where: o.where || `${cityShort}: local branch or chapter`,
+        _cat: tid,
+        _curated: true
+      });
+    });
+  });
+  return out;
+}
+function builtinOpps(talent, cityShort, seenSet, n = 4, opts = {}) {
+  const dedupe = list => list.filter(o => {
+    const k = orgKey(o.org);
+    return k && !seenSet.has(k);
+  });
+  const shuffle = arr => {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
+  if (opts.global) {
+    // Shuffle WITHIN tiers, not across them — shuffling the combined pool
+    // would throw away the category ordering globalPool just established.
+    const inCat = shuffle(dedupe(GLOBAL_OPPS[talent] || []));
+    const rest = shuffle(dedupe(globalPool([])).filter(o => !(GLOBAL_OPPS[talent] || []).some(c => c.org === o.org)));
+    return inCat.concat(rest).slice(0, n).map(o => ({
+      ...o,
+      where: o.where || "Remote — from anywhere",
+      _curated: true
+    }));
+  }
+  // 1) STRICT category first - everything in the chosen talent's pool.
+  const primary = shuffle(dedupe(BUILTIN_OPPS[talent] || []));
+  // 2) Only if the category pool cannot fill the batch, backfill from community.
+  const need = Math.max(0, n - primary.length);
+  const backup = need > 0 && talent !== "community" ? shuffle(dedupe(BUILTIN_OPPS.community || [])).slice(0, need) : [];
+  const out = primary.slice(0, n).concat(backup);
+  return out.map(o => ({
+    ...o,
+    where: `${cityShort}: local branch or chapter`,
+    _curated: true
+  }));
+}
+
+// Warm, personal insight that never needs a network
+function templateInsight(name, opp, supText) {
+  const first = (name || "").split(" ")[0] || "you";
+  const skill = (supText || "").replace(/[."]+$/, "").slice(0, 70).toLowerCase();
+  const t = [`${first}, this one lines up with you almost too well - "${skill}" is exactly the energy ${opp.org} builds its volunteer roles around. Reach out; they'll be glad you did.`, `The thing you said about yourself - "${skill}" - is precisely what makes someone great at ${opp.title.toLowerCase()}. ${opp.org} gets stronger with people like you, ${first}.`, `${opp.org} doesn't need generic volunteers, ${first} - it needs someone who genuinely means it when they say "${skill}". That's you.`, `Honestly, ${first}, "${skill}" plus ${opp.org} is the kind of match this whole site was built to find. Go see what ${opp.title.toLowerCase()} looks like up close.`];
+  const idx = ((opp.org || "").length + (opp.title || "").length) % t.length;
+  return t[idx];
+}
+
+// Shared student-profile block, structured as a Volunteering Interest Card:
+// who they are, and their who / what / where / when / how / why of serving.
+// Every engine matches against the SAME card, which is what stops the four of
+// them drifting into four different interpretations of the same student.
+function profileBlock(loc, tal, supText, prefs) {
+  const cats = prefs.talLabels && prefs.talLabels.length ? prefs.talLabels.join(", ") : tal?.label || "their chosen area";
+  const serveTxt = prefs.serveTxt && prefs.serveTxt.length ? prefs.serveTxt : "";
+  const detail = (prefs.detail || "").trim();
+  const capLine = supText && supText.length ? supText : "general interest in the category";
+  const global = isGlobalLoc(loc.id);
+  const place = global ? loc.label : `${loc.label}, Canada`;
+  return `VOLUNTEERING INTEREST CARD — match against EVERY line, not just the category.
+
+WHO THEY ARE
+- Aged 14-18, based in ${prefs.homeLabel || "Canada"}
+- Interest areas (may be more than one): ${cats}
+
+HOW THEY CAN SERVE (their actual capabilities — this is the core of the match)
+- Selected capabilities, each with the level they claim: "${capLine}"
+${prefs.langTxt ? `- Languages: ${prefs.langTxt}` : ""}
+${detail ? `- In their own words (HIGHEST PRIORITY — match this closely): "${detail}"` : ""}
+
+WHO THEY WANT TO SERVE
+- ${serveTxt || "No population stated — any is acceptable"}
+
+WHERE THEY WANT TO SERVE
+- ${prefs.virtualOnly ? "REMOTE ONLY — every result must be doable entirely from home, from anywhere" : `${place}`}
+- Setting: ${prefs.vibeTxt || "any"}
+${prefs.vtypeTxt ? `- How they want to show up: ${prefs.vtypeTxt}` : ""}
+
+WHEN THEY CAN SERVE
+- ${prefs.timeTxt || "flexible"}
+
+WHY THEY'RE DOING IT
+- ${prefs.whyTxt || "Not stated"}
+
+YOUR TASK: This is MATCHMAKING, not a list of suggestions. You are matching one specific student to specific ROLES at real organizations. A result is only acceptable if it would be a WORSE match for a student with a different capability. If a result would fit any volunteer equally well, it is WRONG: discard it and find a better one.
+
+HARD REQUIREMENTS. Every result MUST satisfy ALL of these. Reject any result that fails even one:
+
+1. REAL AND CURRENT: an organization that exists today, is active in ${global ? loc.short || loc.label : "Canada"}, and takes volunteers aged 14-18 (or runs a youth program).
+
+2. ROLE-LEVEL, NOT ORG-LEVEL. Return a specific position, not an organization to contact.
+   BAD: "Volunteer" at YMCA. BAD: "Music Volunteer" at a hospital. BAD: "Help at community events".
+   GOOD: "Bedside Guitar Player, Pediatric Ward" at a named children's hospital.
+   GOOD: "Assistant Coach, U10 Girls Soccer" at a named community club.
+   If you cannot name a specific role, the organization does not belong in the results.
+
+3. CAPABILITY ALIGNMENT: the role must directly require the exact capability quoted above, AT THE LEVEL THEY CLAIM, not just the broad category.
+   - Respect the stated level in both directions. Do not hand a "still learning" student a role that carries a room alone; do not hand an "advanced" or "certified" student a role that wastes them on setup and chairs.
+   - "Still learning" means the role must have supervision or a partner built into it. Say where that support comes from in the role description.
+   - Someone who plays guitar and leads singalongs must NOT be matched to a role that needs an advanced classical soloist, and vice versa.
+   - Someone who does hands-on field restoration must NOT be matched to a data-entry or public-speaking role.
+   - Someone who tutors math must NOT be matched to a generic literacy program unless it explicitly needs math.
+   The "whyMatch" field must quote their capability and name the specific demand of the role that requires it.
+
+4. AREA: the role must sit inside one of the student's interest areas (${cats}). Reject roles outside all of them.
+
+5. ${prefs.virtualOnly ? "REMOTE ONLY: the student explicitly chose remote, so every result must be doable entirely from home. A role requiring physical presence is an automatic reject, however good the skill fit." : `LOCATION: in or serving ${loc.short || loc.label}. Setting should suit: ${prefs.vibeTxt || "any setting"}.`}${global && !prefs.virtualOnly ? `\n   They are based in Canada, so favour roles they can genuinely reach: remote-first positions, chapters of international organizations, or roles that fit a visit of a few weeks. Do not return a role that assumes they already live there full time.` : ""}
+
+6. ${prefs.langTxt ? `LANGUAGES: they speak ${prefs.langTxt}. If any of these is not English, actively look for at least one role where that language is the reason they'd be chosen — interpreting, settlement and newcomer support, homework help, or a community organization serving those speakers. Do not force it if nothing real exists.\n\n6b. ` : ""}${serveTxt ? `POPULATION: the role should serve ${serveTxt}. If a role serves a different population, only include it if the capability match is exceptionally strong, and say so in whyMatch.` : "POPULATION: no preference stated, so any population is acceptable."}
+
+7. TIME: realistic for ${prefs.timeTxt || "a few hours a week"}. Set "commitment" and "hours" to match. Do not offer a 10 hr/week role to someone with 1-2 hrs.
+
+8. MOTIVATION: ${prefs.whyTxt ? `they are doing this to ${prefs.whyTxt.toLowerCase()}. A role that technically fits their skill but not this reason is a weak match. If they want to meet people, do not send them somewhere they'd work alone; if they want career exposure, favour roles with real practitioners around them.` : "no motivation stated, so do not weight this."}
+
+9. ${LINK_RULE}
+
+10. VARIETY: 5 DIFFERENT organizations. No duplicates, and do not return five versions of the same role type.
+
+BEFORE YOU OUTPUT, run both tests on every result:
+  SPECIFICITY — "Could I swap in a student with a completely different skill and would this still read as a sensible match?" If yes, it is too generic. Replace it.
+  ACTIONABILITY — "Could this student do the firstStep tomorrow without doing any further research?" If not, the result is an idea, not a match. Replace it.`;
+}
+/* ══════════════════════════════════════════════════════════════════
+   MATCH PIPELINE
+
+     STAGE 1  DISCOVER   two grounded web engines + two recall engines,
+                         each with a different search strategy so they
+                         surface different organizations
+     STAGE 2  NORMALIZE  clean, validate, dedupe by org and by domain
+     STAGE 3  JUDGE      one model pass scores every surviving candidate
+                         against the student on four named dimensions and
+                         must cite the duty that needs their capability
+     STAGE 4  BLEND      AI judgement (70%) + deterministic keyword score
+                         (30%), so a confident model can't fully override
+                         the offline scorer and vice versa
+
+   Stage 3 is the part that was missing before: the old code trusted
+   whatever "whyMatch" the generator wrote about its own suggestion.
+   Nothing was ever asked to be skeptical.
+   ══════════════════════════════════════════════════════════════════ */
+
+const SYS_MATCH = `You are a volunteer-placement advisor for high-school students aged 14-18. RISE started in Canada and most of its students are there, but they serve anywhere in the world — locally, remotely, or while travelling. You know the charitable sector well and you are honest about the limits of what you know.
+
+Rules you never break:
+- You only name organizations you are confident actually exist and are active today in the region asked about.
+- You return a ROLE, never a category. If you cannot name the position and what the student would actually do in a session, you do not have a match yet.
+- You would rather say "I am confident about the organization but not this specific program" than invent a program name.
+- You never invent an email address, a phone number, a program name, or a URL path.
+- You would rather return three real matches than five padded ones.
+
+How you find the way in. You have web_fetch as well as web_search, so do not stop at a homepage and tell the student to go looking. Search finds the door; fetch walks through it:
+- Open the organization's site and read its real navigation. Follow Volunteer, Get Involved, Join Us, Opportunities, or Careers until you reach the page a person actually applies on.
+- Many small charities hand their intake to an outside portal such as BetterImpact, Volunteer Connector, Better Together, Galaxy Digital, or a Google Form. Follow it out and give that url, because that is where the student really applies.
+- The organization's operating name is often not its legal name. A city food bank may run under a parent society with a different website. Follow the name the site itself uses.
+- Open the application page before you recommend it. If it 404s or asks for a login you cannot see past, say so rather than passing on a dead link.
+- Read the page for what actually gates a teenager: minimum age, police or vulnerable sector check, references, training, shift length, and application deadlines. A 16 plus rule or a vulnerable sector check is the single most useful thing you can tell a 14 to 18 year old, so report it plainly and never hide it to make a match look better.
+- Say which url is the application itself and which is background.
+- You write plainly. No exclamation marks, no hype words (amazing, incredible, perfect, dream, passionate), no jokes, no preamble. Never use the words delve, leverage, or furthermore.`;
+/* Search geography, passed to the web-search tool so it looks in the right
+   place. Without this, "volunteer tutor" reliably finds Toronto listings for a
+   student in Kamloops, because that's what the open web is weighted towards. */
+const REGION_HINTS = {
+  usa: {
+    country: "US"
+  },
+  "uk-ireland": {
+    country: "GB"
+  },
+  europe: {
+    country: "FR"
+  },
+  latam: {
+    country: "MX"
+  },
+  africa: {
+    country: "KE"
+  },
+  mena: {
+    country: "AE"
+  },
+  "south-asia": {
+    country: "IN"
+  },
+  "east-asia": {
+    country: "SG"
+  },
+  oceania: {
+    country: "AU"
+  }
+};
+const PROV_OF = {
+  on: "Ontario",
+  bc: "British Columbia",
+  ab: "Alberta",
+  qc: "Quebec",
+  mb: "Manitoba",
+  sk: "Saskatchewan",
+  ns: "Nova Scotia",
+  nb: "New Brunswick",
+  nl: "Newfoundland and Labrador",
+  pe: "Prince Edward Island",
+  yt: "Yukon",
+  nt: "Northwest Territories",
+  nu: "Nunavut"
+};
+function searchGeo(loc) {
+  if (!loc) return null;
+  if (REGION_HINTS[loc.id]) return REGION_HINTS[loc.id];
+  if (loc.id === "virtual") return null; // remote work isn't geographically anchored
+  const group = LOC_GROUPS.find(g => g.locs.some(l => l.id === loc.id));
+  const region = group && PROV_OF[String(group.prov || "").toLowerCase()] || (group ? group.prov : "");
+  return {
+    country: "CA",
+    region: region && !/rest of the world|remote/i.test(region) ? region : "",
+    city: loc.short || loc.label
+  };
+}
+
+/* Each search run leads with a different angle. Two students with the same
+   answers — or the same student searching twice — should not be handed an
+   identical list, and the model will otherwise reach for the same obvious
+   national charities every time. Rotating the opening search is the cheapest
+   way to reach a different part of the web. */
+const ANGLES = [`START HERE: search the student's exact capability words as a role title, plus their city. Look for the smallest, most specific organizations that come back — a single neighbourhood house or one hospital programme beats a national charity's generic page.`, `START HERE: search the local volunteer-matching boards and the city's own volunteer portal for currently-listed postings. Open the individual listings, not the category pages.`, `START HERE: think about which local institutions would structurally need this exact skill — hospitals, long-term care homes, libraries, school boards, settlement agencies, community centres — then search those named institution types in this city with the skill word.`, `START HERE: search for the population the student wants to serve in their city, find the organizations that serve that group, then check each one's volunteer page for a role using this student's skill.`];
+
+/* ── DISCOVERY ──
+   One grounded call, not four.
+
+   The old design fired four engines at every search. On a metered account
+   that's four times the web-search bill for heavily overlapping results — the
+   same three organizations arriving by four routes. One well-instructed search
+   pass with real web access beats four guesses, and the judge below is what
+   adds rigour, not repetition. */
+async function webSearchOpps(talent, location, supText, prefs = {}, exclude = "", opts = {}) {
+  const loc = ALL_LOCS.find(l => l.id === location) || {
+    label: location
+  };
+  const tal = TALENTS.find(t => t.id === talent);
+  const want = opts.count || 5;
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 3200,
+    temperature: 0.3,
+    schema: OPP_SCHEMA,
+    // Always hit the network: a live search that replays a cached answer is
+    // not a live search.
+    fresh: true,
+    search: Object.assign({
+      maxUses: opts.maxUses || 4
+    }, searchGeo(loc) || {}),
+    messages: [{
+      role: "user",
+      content: `Find ${want} SPECIFIC volunteer ROLES for this student. Search the live web, open the actual listings, then call emit once with what you found.
+
+TODAY IS ${new Date().toISOString().slice(0, 10)}. You are looking for positions a student could apply to THIS WEEK. Prefer a dated, currently-open posting over an organization's evergreen "we sometimes need volunteers" page. If a listing shows a posting date, an application deadline, a term start, or an intake session, put it in "commitment" — that is what makes this real rather than a suggestion.
+
+${ANGLES[(opts.angle || 0) % ANGLES.length]}
+
+WHERE ELSE TO LOOK — places that carry real postings, not general advice pages:
+  · the local volunteer centre and its listings board
+  · ${prefs.virtualOnly ? "remote and virtual volunteering boards" : `"${loc.short || loc.label} volunteer" listing sites`}
+  · named organizations' own Volunteer / Get Involved pages
+${prefs.langTxt && !/^english/i.test(prefs.langTxt) ? `  · one search for a role needing their language: ${prefs.langTxt}\n` : ""}
+${profileBlock(loc, tal, supText, prefs)}
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}
+
+Open the postings before you decide. A search snippet cannot tell you whether a role needs this student's specific skill — only the listing itself can.
+
+For every result set "sourceUrl" to the exact page you read it on, and "link" to the organization's root homepage. If a posting names a contact person or a coordinator's email, put it in firstStep and contactEmail — that is the single most useful thing on the card. Never invent one.
+
+Return fewer than ${want} rather than padding with roles any volunteer could do.`
+    }]
+  }, 90000, 1);
+  return tagSources(extractJSON(res), res, "web");
+}
+
+/* ── SHARED DISCOVERY — the cohort pass ──────────────────────────────────
+   "What volunteer roles for music exist in Toronto right now?" has the same
+   answer for every student in that city and category. Web search is where
+   essentially the entire bill goes, so asking it once per student was paying
+   many times for one answer: at ~$0.15 a search, a class of thirty consumed a
+   $5 daily budget before lunch and everyone after that silently got the
+   offline library.
+
+   This pass is deliberately IMPERSONAL. Nothing about the individual goes in —
+   no capabilities, no languages, no free text, no name. That is what makes it
+   safe to share, and the cache key says exactly what it contains: place,
+   category, angle, and whether the role must be remote. Those four change
+   which organizations exist; nothing else does.
+
+   Personalisation has not been dropped, it has moved. The judge downstream
+   scores this pool against the individual student, which is the right division
+   of labour: discovery answers "what is out there", judging answers "what is
+   right for you". It also produces BETTER matches, not merely cheaper ones —
+   the pool is larger (ten roles rather than five) and accumulates across the
+   four angles, so the judge chooses from a much wider field than a single
+   personalised search ever returned. */
+/* The four ANGLES above are phrased for the personalised search — they talk
+   about "the student's capability words" and "the population they want to
+   serve". In a prompt that deliberately contains no student, those refer to
+   nothing and the model has to guess what it is being asked. Same four search
+   strategies, rewritten for a category-and-city question. */
+const SHARED_ANGLES = [`START HERE: search the category as a role title plus the place. Look for the smallest, most specific organizations that come back — a single neighbourhood house or one hospital programme beats a national charity's generic page.`, `START HERE: search the local volunteer-matching boards and the city's own volunteer portal for currently-listed postings in this category. Open the individual listings, not the category pages.`, `START HERE: think about which institutions structurally need this category of help — hospitals, long-term care homes, libraries, school boards, settlement agencies, community centres, animal shelters — then search those named institution types in this place.`, `START HERE: search for the populations this category most often serves in this place — seniors, newcomers, children, people with disabilities — find the organizations serving them, then check each one's volunteer page for roles in this category.`];
+async function sharedDiscovery(talent, location, opts = {}) {
+  const loc = ALL_LOCS.find(l => l.id === location) || {
+    label: location
+  };
+  const tal = TALENTS.find(t => t.id === talent);
+  const remote = !!opts.virtualOnly;
+  const angle = (opts.angle || 0) % SHARED_ANGLES.length;
+  const want = opts.count || 10;
+  const place = isGlobalLoc(loc.id) ? loc.label : `${loc.label}, Canada`;
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 3600,
+    temperature: 0.3,
+    schema: OPP_SCHEMA,
+    // Shared identity. Must stay free of anything personal — see above.
+    cacheKey: `disc:v1:${loc.id}:${talent}:${angle}:${remote ? "r" : "l"}`,
+    search: Object.assign({
+      maxUses: opts.maxUses || 4
+    }, searchGeo(loc) || {}),
+    messages: [{
+      role: "user",
+      content: `Find ${want} SPECIFIC volunteer ROLES that a 14-18 year old could apply to. Search the live web, open the actual listings, then call emit once.
+
+TODAY IS ${new Date().toISOString().slice(0, 10)}. Look for positions open THIS WEEK. Prefer a dated, currently-open posting over an evergreen "we sometimes need volunteers" page. If a listing shows a posting date, deadline, term start or intake session, put it in "commitment".
+
+${SHARED_ANGLES[angle]}
+
+WHERE
+- ${remote ? "REMOTE ONLY — the role must be doable entirely from home." : place}
+- Category: ${tal?.label || talent}
+
+WHERE ELSE TO LOOK — pages that carry real postings, not general advice:
+  · the local volunteer centre and its listings board
+  · ${remote ? "remote and virtual volunteering boards" : `"${loc.short || loc.label} volunteer" listing sites`}
+  · named organizations' own Volunteer / Get Involved pages
+
+This is a shortlist a careful advisor will narrow down afterwards, so RANGE MATTERS. Return roles that differ from each other — different organizations, different populations served, different time commitments, different specific skills. Ten near-identical tutoring roles are worth less than six genuinely different ones.
+
+State plainly what each role actually involves in a session and what skill it needs. Do not tailor to any particular student; describe the role as posted.
+
+Set "remote" to true ONLY if the whole role can be done from home with no in-person attendance. A hybrid role, or one with any required on-site shift, is false.
+
+For every result set "sourceUrl" to the exact page you read it on, and "link" to the organization's root homepage. If a posting names a coordinator or an email, put it in firstStep and contactEmail. Never invent one.
+
+Return fewer than ${want} rather than padding with roles any volunteer could do.`
+    }]
+  }, 90000, 1);
+  return tagSources(extractJSON(res), res, "web");
+}
+
+/* PRECISION PASS — only used by Load More, where the student has already seen
+   the first set and is asking for different ground. Runs the student's own
+   words as search terms rather than the category. */
+async function webSearchExact(talent, location, supText, prefs = {}, exclude = "") {
+  const loc = ALL_LOCS.find(l => l.id === location) || {
+    label: location
+  };
+  const tal = TALENTS.find(t => t.id === talent);
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 2600,
+    temperature: 0.3,
+    schema: OPP_SCHEMA,
+    fresh: true,
+    search: Object.assign({
+      maxUses: 3
+    }, searchGeo(loc) || {}),
+    messages: [{
+      role: "user",
+      content: `A student described what they can do in their own words: "${supText}"${prefs.detail ? ` They added: "${prefs.detail}"` : ""}
+
+Break that into concrete searchable terms — the specific instrument, subject, sport, language, software or population — and search those as role titles${prefs.virtualOnly ? " on remote volunteering boards" : ` in ${loc.short || loc.label}`}. Open the listings you find.
+
+You are looking for roles that would be a WORSE fit for a student without this exact capability. If a role suits any volunteer equally well, it does not belong in the answer.
+
+${profileBlock(loc, tal, supText, prefs)}
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}
+Set sourceUrl to the page you read. Return 3-4 results, or fewer if that's what is genuinely there. Then call emit once.`
+    }]
+  }, 90000, 1);
+  return tagSources(extractJSON(res), res, "web");
+}
+
+/* ── FALLBACK ENGINES (no web search) ──
+   Used when web search isn't available — no proxy deployed, or a free key with
+   no grounding allowance. Recall-only, so results are organizations the model
+   knows rather than current postings, and the card says so. */
+async function aiOppsNational(talent, location, supText, prefs = {}, exclude = "") {
+  const loc = ALL_LOCS.find(l => l.id === location) || {
+    label: location
+  };
+  const tal = TALENTS.find(t => t.id === talent);
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 2200,
+    temperature: 0.5,
+    schema: OPP_SCHEMA,
+    fresh: true,
+    messages: [{
+      role: "user",
+      content: `From well-known REAL organizations with local chapters in ${loc.label} — public libraries, hospitals and children's hospitals, YMCA, BGC Canada, food banks, literacy and STEM charities, conservation groups, Special Olympics and other disability-sport bodies, Scouts/Guides, hospices, and the large international NGOs that run youth or remote programs — identify the 5 specific ROLES that best match this student.
+
+Name the actual position AND the program it sits inside, not just the organization. "Volunteer at the YMCA" is a failure. "Youth Swim Program Assistant, YMCA Aquatics" is an answer.
+
+Only include an organization if you are certain it exists AND certain it runs the program you name. If you are confident about the organization but not the program, describe the role generically at the level you are sure of rather than inventing a program name. Three precise matches beat five vague ones — returning fewer is allowed.
+
+${profileBlock(loc, tal, supText, prefs)}
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}`
+    }]
+  });
+  return tagSources(extractJSON(res), res, "recall");
+}
+async function aiOppsLocal(talent, location, supText, prefs = {}, exclude = "") {
+  const loc = ALL_LOCS.find(l => l.id === location) || {
+    label: location
+  };
+  const tal = TALENTS.find(t => t.id === talent);
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 2200,
+    temperature: 0.5,
+    schema: OPP_SCHEMA,
+    fresh: true,
+    messages: [{
+      role: "user",
+      content: `Think of REAL organizations specific to ${loc.label}: community centres, local festivals and theatres, city recreation programs, neighbourhood charities, food banks and hampers, long-term care homes, hospices, shelters, and the regional health service.
+
+Identify the 5 specific ROLES at these organizations that best match this student, naming the actual position and program.
+
+Only include an organization you are confident exists in this area. If you are unsure whether a small local group is real, substitute a REGIONAL organization that genuinely serves this area. A precise role at a real regional organization is worth far more than a guessed local one — a student who emails an organization that does not exist loses trust in the whole tool.
+
+${profileBlock(loc, tal, supText, prefs)}
+${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}`
+    }]
+  });
+  return tagSources(extractJSON(res), res, "recall");
+}
+
+function tagSources(arr, res, kind) {
+  const sources = res && res.sources || [];
+  return (arr || []).map(o => Object.assign({}, o, {
+    _origin: kind,
+    _sources: matchSources(o, sources)
+  }));
+}
+
+// Attach only the citations whose domain or title actually relates to this org,
+// so a card never claims a source it wasn't built from.
+function matchSources(opp, sources) {
+  // The page the model actually read beats anything inferred from the citation
+  // list, so it leads.
+  const own = opp.sourceUrl && /^https?:\/\//.test(opp.sourceUrl) ? [{
+    title: "Posting",
+    uri: opp.sourceUrl
+  }] : [];
+  if (!sources.length) return own;
+  const org = (opp.org || "").toLowerCase();
+  const words = org.split(/[^a-z]+/).filter(w => w.length > 3);
+  let host = "";
+  try {
+    host = new URL(opp.link).hostname.replace(/^www\./, "").toLowerCase();
+  } catch (e) {}
+  const root = host.split(".")[0];
+  const related = sources.filter(s => {
+    const hay = (s.title + " " + s.uri).toLowerCase();
+    if (s.uri === opp.sourceUrl) return false; // already first
+    if (root && root.length > 3 && hay.includes(root)) return true;
+    return words.some(w => hay.includes(w));
+  });
+  return own.concat(related).slice(0, 3);
+}
+
+/* ── STAGE 3: the judge ──
+   One call scores every candidate at once. Scoring them together is
+   deliberate: the model calibrates against the actual field of options
+   instead of rating each one in a vacuum, which is where "everything is
+   a 9/10" comes from. */
+const JUDGE_RUBRIC = `IMPORTANT — these candidates were written by a language model, quite possibly you, working from this same student profile. So of course they look tailored: that is what the generator was asked to do. Some of them are real. Some are a real organization with an invented program attached. A few may be entirely fabricated. Finding which is which is the whole job here, and you are the only step that ever checks.
+
+Score each candidate on four dimensions. Be strict — most real volunteer listings are mediocre matches, and saying so is the useful thing.
+
+capability (0-40) — does this role REQUIRE the student's specific stated capability, at the level they claim?
+   36-40  the role is impossible to do well without it, and the level fits
+   25-35  the capability is a clear, named advantage in the role
+   12-24  the capability is loosely relevant; the role is in the right area
+   0-11   any volunteer could do this equally well
+   Level mismatch cuts this in both directions: a role that needs more than they claim is a risk to them and to the organization; a role that needs far less wastes them. If they listed a language other than English and the role is built around that language, treat it as a named capability, not a bonus.
+population (0-20) — does it serve the group they asked for, AND does it match why they're doing this? 20 exact on both, 10 adjacent, 4 unrelated. If they stated no preference, give 14. A role that fits the population but fights their stated motivation (solo work for someone who wants to meet people; back-office work for someone who wants career exposure) caps at 12.
+logistics (0-20) — location, time commitment, setting, age eligibility, and how they want to show up (from home / in their community / while travelling) all workable? Subtract hard for a role that needs more hours than they have, is in the wrong place, requires presence when they asked for remote, or has an age floor above them.
+credibility (0-20) — how sure are you this organization and this role exist as described? Judge the ROLE, not just the organization.
+   18-20  You could have named this exact programme before you saw this list.
+   11-17  You know the organization is real and this is the kind of thing it runs, but you are inferring the specific role.
+   4-10   You recognise the organization's name and nothing more, OR it is a plausible-sounding local charity you cannot actually place.
+   0-3    You cannot confirm the organization exists at all.
+   The generator had every incentive to sound confident. You have none. If your only reason for believing a programme exists is that it appears in this list, that is 10 at most.
+
+verdict: "strong" (total >= 72), "good" (50-71), "weak" (30-49), "reject" (< 30, or anything you believe is not real).
+
+CALIBRATION — read this before you write any numbers. Scoring a whole set at 90+ is the most common way this task is done badly, and it makes the ranking worthless: if everything is strong, nothing is. Across five candidates, a realistic spread is about one strong, two good, and two weak or rejected. Award full marks on a dimension only when you would defend that score to someone who checked. If you find yourself putting nearly everything above 70, you are being agreeable rather than useful — go back and separate them.
+evidence: one sentence naming the SPECIFIC duty of this role that needs their capability. Quote their words. If you can't name one, that is itself a low capability score.
+concern: the single biggest reason this might not work out, or "" if none. Be honest — an unstated age limit or a screening requirement belongs here.`;
+async function judgeMatches(candidates, loc, tal, supText, prefs) {
+  if (!candidates.length) return {};
+  const list = candidates.map((o, i) => `[${i}] ${o.title} — ${o.org}
+    what they'd do: ${(o.role || o.desc || "").slice(0, 260)}
+    commitment: ${o.commitment || o.hours || "unstated"} | where: ${o.where || "unstated"} | requirements: ${o.requirements || "none listed"}`).join("\n");
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: SYS_MATCH,
+    max_tokens: 3000,
+    temperature: 0.1,
+    schema: JUDGE_SCHEMA,
+    messages: [{
+      role: "user",
+      content: `Score how well each candidate volunteer role fits this specific student. You did not write these candidates and you have no stake in them — reject the weak ones.
+
+STUDENT
+- Location: ${isGlobalLoc(loc.id) ? loc.label : loc.label + ", Canada"}
+- Interest areas: ${prefs.talLabels && prefs.talLabels.length ? prefs.talLabels.join(", ") : tal?.label || "unstated"}
+- Stated capabilities, with the level they claim: "${supText || "none given"}"
+${prefs.langTxt ? `- Languages: ${prefs.langTxt}` : ""}
+${prefs.detail ? `- In their own words: "${prefs.detail}"` : ""}
+${prefs.serveTxt ? `- Wants to serve: ${prefs.serveTxt}` : "- No population preference stated"}
+- Availability: ${prefs.timeTxt || "flexible"}
+- Setting: ${prefs.vibeTxt || "any"}${prefs.virtualOnly ? " (REMOTE ONLY — anything in-person scores 0 on logistics)" : ""}
+${prefs.vtypeTxt ? `- How they want to show up: ${prefs.vtypeTxt}` : ""}
+- Why they're doing it: ${prefs.whyTxt || "not stated — do not weight this"}
+
+CANDIDATES
+${list}
+
+${JUDGE_RUBRIC}
+
+Return one object per candidate, using the candidate's [index] as id.`
+    }]
+  }, 45000, 1);
+  const rows = extractJSON(res);
+  const out = {};
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const i = Number(r.id);
+    if (!candidates[i]) continue;
+    const cap = clamp(r.capability, 0, 40),
+      pop = clamp(r.population, 0, 20),
+      log = clamp(r.logistics, 0, 20),
+      cred = clamp(r.credibility, 0, 20);
+    out[i] = {
+      capability: cap,
+      population: pop,
+      logistics: log,
+      credibility: cred,
+      total: cap + pop + log + cred,
+      verdict: r.verdict || "good",
+      evidence: r.evidence || "",
+      concern: r.concern || ""
+    };
+  }
+  return out;
+}
+function clamp(n, lo, hi) {
+  n = Number(n);
+  if (!isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, Math.round(n)));
+}
+
+/* ── STAGE 3.5: hard constraints ──────────────────────────────────────────
+   Some of what a student tells us is a preference to be weighed. Some of it is
+   a wall. "I can only volunteer from home" is a wall: an in-person role is not
+   a worse match for that student, it is an impossible one.
+
+   The judge was the only thing enforcing this, through a 20-point logistics
+   dimension inside a 100-point score. A role that nailed the capability match
+   could therefore score in the seventies and sit at the top of the list while
+   being something the student physically cannot attend. The prompt says
+   "anything in-person scores 0 on logistics", but a prompt is a request, not a
+   guarantee.
+
+   So walls are enforced here, in code, after the judge has had its say.
+   Returns a reason string when the role breaks a stated constraint. */
+function constraintBreak(opp, prefs) {
+  if (!prefs) return null;
+  if (prefs.virtualOnly) {
+    // Trust the model's explicit flag; fall back to the prose only when the
+    // field is missing (older cached results predate the schema change).
+    const isRemote = typeof opp.remote === "boolean" ? opp.remote : /remote|virtual|online|from home|anywhere/i.test(`${opp.where || ""} ${(opp.tags || []).join(" ")}`);
+    if (!isRemote) return "Needs you on site — you asked for remote only";
+  }
+  return null;
+}
+
+/* ── STAGE 4: blend ──
+   The deterministic scorer is noisy but never hallucinates; the judge is
+   sharp but can be talked into things. Neither gets the last word. */
+function blendScore(deterministic, judged) {
+  const det = Math.max(0, Math.min(100, Math.round(deterministic / 112 * 100)));
+  if (!judged) return {
+    score: det,
+    det,
+    ai: null
+  };
+  return {
+    score: Math.round(judged.total * 0.7 + det * 0.3),
+    det,
+    ai: judged.total
+  };
+}
+
+/* Ask the server to confirm each link actually resolves. Only works when the
+   proxy is deployed (a browser can't read cross-origin response codes), and
+   fails silently everywhere else — an unchecked link is shown as unchecked,
+   never as verified. */
+async function verifyLinks(urls) {
+  if (PROXY_STATE === "dead" || !urls.length) return {};
+  try {
+    const res = await fetch(PROXY_PATH, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        action: "verify",
+        urls: urls.slice(0, 24)
+      })
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data && data.results || {};
+  } catch (e) {
+    return {};
+  }
+}
+async function getInsight(opp, name, supText) {
+  try {
+    const data = await apiCall({
+      model: MODELS.fast,
+      system: SYS_MATCH,
+      max_tokens: 200,
+      temperature: 0.4,
+      messages: [{
+        role: "user",
+        content: `In 2 sentences, explain why "${opp.title}" at ${opp.org} suits a student whose stated capability is: "${(supText || "").slice(0, 120)}". Name the specific part of the role that needs that capability. If the role honestly doesn't need it, say what it does offer them instead — do not oversell.`
+      }]
+    }, 8000, 0);
+    const txt = data.content?.find(c => c.type === "text")?.text || "";
+    if (txt) return txt;
+  } catch (e) {}
+  return templateInsight(name, opp, supText);
+}
+
+/* ── Outreach drafting ──
+   Turns a match into a first email the student can actually send. Written
+   to sound like a 16-year-old wrote it, because one did. */
+async function draftOutreach(opp, student) {
+  const name = (student.name || "").trim();
+  const res = await apiCall({
+    model: MODELS.smart,
+    system: `You write short volunteer-enquiry emails as the STUDENT, in first person. You are 14-18 and you sound like it: direct, specific, a little plain. Never corporate, never gushing. No exclamation marks. Never claim experience, credentials, or availability the student did not state.`,
+    max_tokens: 420,
+    temperature: 0.6,
+    messages: [{
+      role: "user",
+      content: `Write an enquiry email for this volunteer role.
+
+ROLE: ${opp.title} at ${opp.org}
+WHAT IT INVOLVES: ${(opp.role || opp.desc || "").slice(0, 300)}
+${opp.firstStep ? `THEIR SUGGESTED FIRST STEP: ${opp.firstStep}` : ""}
+
+FROM: ${name || "a high-school student"}${student.city ? `, in ${student.city}` : ""}
+WHAT THEY CAN DO: ${student.skills || "not stated"}
+${student.langs ? `LANGUAGES THEY SPEAK: ${student.langs}` : ""}
+${student.detail ? `IN THEIR OWN WORDS: "${student.detail}"` : ""}
+TIME THEY HAVE: ${student.time || "flexible"}
+
+Rules:
+- First line must be exactly "Subject: ..." then a blank line, then the body.
+- Body is 90-130 words, four short paragraphs at most.
+- Say what specifically they can do and tie it to this role's actual duties.
+- Ask one concrete question (whether the role is open, and what the next step is).
+- Sign off with just their first name${name ? ` (${name.split(" ")[0]})` : ""}.
+- Do not invent grades, awards, hours already served, or references.
+- Do not upgrade their level. If they said they're still learning, the email says they're still learning and keen — that honesty is what gets a 15-year-old taken seriously, and overselling gets found out in week one.`
+    }]
+  }, 25000, 1);
+  return (res.content || []).find(c => c.type === "text")?.text || "";
+}
+// ── Contact email helpers ──
+// Only ever returns an email we actually have. Never fabricates one.
+function contactEmailOf(opp) {
+  const raw = (opp && (opp.contactEmail || opp.email || "")).trim();
+  // strict-ish validation: real-looking address, no spaces, single @, a dot in domain
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(raw)) return raw;
+  return "";
+}
+
+// Build a Gmail compose deep-link (opens Gmail web compose with fields pre-filled).
+// Falls back to a normal mailto: for users who don't use Gmail in a browser.
+function gmailComposeUrl(to, subject, body) {
+  const base = "https://mail.google.com/mail/?view=cm&fs=1";
+  const parts = [base];
+  if (to) parts.push("to=" + encodeURIComponent(to));
+  if (subject) parts.push("su=" + encodeURIComponent(subject));
+  if (body) parts.push("body=" + encodeURIComponent(body));
+  return parts.join("&");
+}
+
+// Split a pitch's "Subject:" line from the body, for pre-filling compose fields.
+function splitPitch(text) {
+  const lines = (text || "").split("\n");
+  if (lines[0] && /^subject:/i.test(lines[0].trim())) {
+    return {
+      subject: lines[0].replace(/^subject:/i, "").trim(),
+      body: lines.slice(1).join("\n").replace(/^\s+/, "")
+    };
+  }
+  return {
+    subject: "Volunteer application",
+    body: text || ""
+  };
+}
+async function getHoursReflection(total, entries, goal = 40) {
+  const summary = entries.slice(0, 6).map(e => `${e.project} (${e.hours}h)`).join(", ");
+  const data = await apiCall({
+    model: "claude-sonnet-4-6",
+    max_tokens: 200,
+    messages: [{
+      role: "user",
+      content: `2-3 sentences reflecting on a student's volunteer journey: ${total.toFixed(1)}/${goal} hrs, sessions: ${summary}. Sound like an older friend or peer mentor who is genuinely proud of them. Specific, casual-warm, encouraging. Never robotic, no corporate words, no preamble.`
+    }]
+  }, 30000, 0);
+  return data.content?.find(c => c.type === "text")?.text || "";
+}
+
+/* ═══════════════════════════════════════
+   SMALL COMPONENTS
+═══════════════════════════════════════ */
+const Shimmer = ({
+  w = "100%",
+  h = 13,
+  r = 5
+}) =>
+/*#__PURE__*/
+/*#__PURE__*/
+React.createElement("div", {
+  className: "shimmer",
+  style: {
+    width: w,
+    height: h,
+    borderRadius: r
+  }
+});
+function useAuth() {
+  const [user, setUser] = useState(window.riseCloud.getUser());
+  useEffect(() => window.riseCloud.subscribe(setUser), []);
+  return user;
+}
+function useStorage(key, initial, cloudSync = false) {
+  const [value, setValue] = useState(initial);
+  const [loaded, setLoaded] = useState(false);
+  const user = useAuth();
+  /* Key the cloud sync on the user ID, not the user object. setSession builds
+     a fresh object on every auth notification, so depending on `user` re-ran
+     this effect — and re-fetched and re-merged the whole record — every time
+     the session was merely re-confirmed. */
+  const uid = user?.uid || null;
+
+  /* Mirror of the current value, so the async paths below can read state
+     without doing their work inside a setState updater. React treats updaters
+     as pure and is free to invoke them more than once; the previous version
+     wrote to localStorage and POSTed to Supabase from inside one, so a single
+     logical save could fire several duplicate network writes. */
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+  const persist = useCallback(next => {
+    window.storage.set(key, JSON.stringify(next)).catch(() => {});
+    if (cloudSync && window.riseCloud.getUser()) {
+      window.riseCloud.cloudSet(key, JSON.stringify(next)).catch(() => {});
+    }
+  }, [key, cloudSync]);
+
+  /* Local read. The promise is held so the cloud merge can wait for it —
+     see the race note below. */
+  const localReady = useRef(null);
+  useEffect(() => {
+    localReady.current = (async () => {
+      try {
+        const s = await window.storage.get(key);
+        if (s?.value != null) {
+          const parsed = JSON.parse(s.value);
+          valueRef.current = parsed;
+          setValue(parsed);
+        }
+      } catch (e) {}
+      setLoaded(true);
+    })();
+  }, [key]);
+
+  // When signed in, pull the cloud copy; merge (cloud wins on conflicts, local-only entries kept for arrays)
+  useEffect(() => {
+    if (!cloudSync || !uid) return;
+    let cancelled = false;
+    (async () => {
+      /* Wait for the local read to land first. Both effects fire on mount when
+         a session is already restored, and they race: localStorage usually
+         resolves first, but when it did not, the late local read overwrote the
+         freshly merged cloud copy with stale on-device data — and the next
+         save pushed that truncated version back up. That silently dropped
+         logged hours and favourites between devices. */
+      try {
+        await localReady.current;
+      } catch (e) {}
+      if (cancelled) return;
+      try {
+        const cloudVal = await window.riseCloud.cloudGet(key);
+        if (cancelled) return;
+        const prev = valueRef.current;
+        let merged;
+        if (cloudVal != null) {
+          const cloud = JSON.parse(cloudVal);
+          merged = cloud;
+          if (Array.isArray(cloud) && Array.isArray(prev)) {
+            // Dedup by id when present, else by a stable content signature
+            // (favorites have no id — this stops them duplicating across devices)
+            const sig = e => e && e.id != null ? "id:" + e.id : "c:" + (e.link || "") + "|" + (e.org || "") + "|" + (e.title || "");
+            const seen = new Set(cloud.map(sig));
+            merged = [...cloud, ...prev.filter(e => !seen.has(sig(e)))];
+          }
+        } else {
+          // First sign-in on this account: push local data up unchanged.
+          merged = prev;
+        }
+        valueRef.current = merged;
+        setValue(merged);
+        persist(merged);
+      } catch (e) {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudSync, uid, key, persist]);
+  const setAndPersist = useCallback(v => {
+    // Resolve against the ref rather than inside an updater, so the write
+    // happens exactly once. The ref is advanced synchronously, which keeps
+    // back-to-back functional updates correct.
+    const next = typeof v === "function" ? v(valueRef.current) : v;
+    valueRef.current = next;
+    setValue(next);
+    persist(next);
+  }, [persist]);
+  return [value, setAndPersist, loaded];
+}
+function Toggle({
+  on,
+  onChange,
+  label
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    role: "switch",
+    "aria-checked": on,
+    "aria-label": label || "Toggle",
+    onClick: onChange,
+    className: "tog",
+    style: {
+      width: 52,
+      height: 27,
+      background: on ? "var(--fire)" : "var(--ink-5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: on ? "flex-start" : "flex-end",
+      padding: "0 7px"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    "aria-hidden": "true",
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      color: on ? "rgba(255,255,255,.85)" : "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".04em",
+      lineHeight: 1,
+      transition: "color .15s"
+    }
+  }, on ? "On" : "Off"), /*#__PURE__*/React.createElement("div", {
+    className: "tog-dot",
+    style: {
+      width: 21,
+      height: 21,
+      top: 3,
+      left: on ? 28 : 3
+    }
+  }));
+}
+function ChoiceBtn({
+  selected,
+  onClick,
+  children
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+    className: `choice${selected ? " chosen" : ""}`,
+    onClick: onClick
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, children), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 19,
+      height: 19,
+      borderRadius: "50%",
+      border: selected ? "none" : "1.5px solid var(--ink-4)",
+      background: selected ? "var(--fire)" : "transparent",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+    }
+  }, selected &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Check, {
+    size: 10,
+    color: "#fff",
+    strokeWidth: 3
+  })));
+}
+function Ring({
+  pct,
+  size = 140,
+  stroke = 11
+}) {
+  const r = (size - stroke * 2) / 2,
+    circ = 2 * Math.PI * r,
+    off = circ * (1 - Math.min(pct, 100) / 100);
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    style: {
+      transform: "rotate(-90deg)"
+    }
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+    id: "rg",
+    x1: "0%",
+    y1: "0%",
+    x2: "100%",
+    y2: "0%"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0%",
+    stopColor: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "100%",
+    stopColor: "var(--fire-light)"
+  }))), /*#__PURE__*/React.createElement("circle", {
+    cx: size / 2,
+    cy: size / 2,
+    r: r,
+    fill: "none",
+    stroke: "var(--ink-5)",
+    strokeWidth: stroke
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: size / 2,
+    cy: size / 2,
+    r: r,
+    fill: "none",
+    strokeWidth: stroke,
+    stroke: "url(#rg)",
+    strokeDasharray: circ,
+    strokeDashoffset: off,
+    strokeLinecap: "round",
+    className: "prog-ring"
+  }));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MATCH TRANSPARENCY
+
+   A number with no explanation is just decoration. These components
+   show the student exactly why a role ranked where it did, including
+   the parts the model was unsure about.
+═══════════════════════════════════════════════════════════════ */
+
+const VERDICTS = {
+  strong: {
+    label: "Strong match",
+    cls: "badge-green"
+  },
+  good: {
+    label: "Good match",
+    cls: "badge-fire"
+  },
+  weak: {
+    label: "Worth a look",
+    cls: "badge-neutral"
+  }
+};
+function verdictOf(opp) {
+  if (opp._judge && VERDICTS[opp._judge.verdict]) return opp._judge.verdict;
+  const s = opp._score || 0;
+  return s >= 72 ? "strong" : s >= 50 ? "good" : "weak";
+}
+const DIMS = [{
+  k: "capability",
+  max: 40,
+  label: "Needs your skill"
+}, {
+  k: "population",
+  max: 20,
+  label: "Who it serves"
+}, {
+  k: "logistics",
+  max: 20,
+  label: "Fits your schedule"
+}, {
+  k: "credibility",
+  max: 20,
+  label: "Confidence it's real"
+}];
+
+// Compact score dial. Colour tracks the verdict, not an arbitrary gradient.
+function ScoreDial({
+  score,
+  verdict,
+  size = 46
+}) {
+  const r = size / 2 - 4,
+    c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score || 0));
+  const col = verdict === "strong" ? "var(--success)" : verdict === "good" ? "var(--fire)" : "var(--ink-4)";
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      width: size,
+      height: size,
+      flexShrink: 0
+    },
+    title: `Match score ${pct} out of 100`
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    style: {
+      transform: "rotate(-90deg)"
+    },
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("circle", {
+    cx: size / 2,
+    cy: size / 2,
+    r: r,
+    fill: "none",
+    stroke: "var(--ink-6)",
+    strokeWidth: 4
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: size / 2,
+    cy: size / 2,
+    r: r,
+    fill: "none",
+    stroke: col,
+    strokeWidth: 4,
+    strokeDasharray: c,
+    strokeDashoffset: c - c * pct / 100,
+    strokeLinecap: "round",
+    style: {
+      transition: "stroke-dashoffset .7s cubic-bezier(.4,0,.2,1)"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      inset: 0,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: size > 40 ? 14 : 12,
+      fontWeight: 700,
+      color: col
+    }
+  }, pct));
+}
+
+// The breakdown behind the dial. Only rendered once the judge pass has
+// actually run — we never invent subscores to fill the panel.
+function ScoreBreakdown({
+  opp
+}) {
+  const j = opp._judge;
+  if (!j) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      padding: "12px 14px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10
+    }
+  }, DIMS.map(d => {
+    const v = j[d.k] || 0,
+      pct = Math.round(v / d.max * 100);
+    return /*#__PURE__*/React.createElement("div", {
+      key: d.k,
+      style: {
+        marginBottom: 9
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        fontSize: 11,
+        color: "var(--ink-2)",
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", null, d.label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "var(--ink-3)",
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, v, " / ", d.max)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        height: 4,
+        background: "var(--ink-6)",
+        borderRadius: 100,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        height: "100%",
+        width: pct + "%",
+        borderRadius: 100,
+        background: pct >= 70 ? "var(--success)" : pct >= 40 ? "var(--fire)" : "var(--ink-4)",
+        transition: "width .6s ease"
+      }
+    })));
+  }), j.concern && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      paddingTop: 10,
+      borderTop: "1px solid var(--ink-5)",
+      display: "flex",
+      gap: 7,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 12,
+    color: "var(--ink-4)",
+    style: {
+      flexShrink: 0,
+      marginTop: 2
+    }
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 2
+    }
+  }, "Worth knowing"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, j.concern))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      fontSize: 10.5,
+      color: "var(--ink-4)",
+      lineHeight: 1.5
+    }
+  }, "Scored against your profile", opp._detPct != null ? ` · keyword fit ${opp._detPct}/100` : "", ". Always check details with the organization."));
+}
+
+// Citation chips — the actual pages the search read. Shown only when the
+// provider returned grounding data, never fabricated from the org name.
+function SourceChips({
+  sources
+}) {
+  if (!sources || !sources.length) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      alignSelf: "center"
+    }
+  }, "Sources"), sources.map((s, i) => {
+    let host = s.title || "source";
+    try {
+      host = new URL(s.uri).hostname.replace(/^www\./, "");
+    } catch (e) {}
+    return /*#__PURE__*/React.createElement("a", {
+      key: i,
+      href: s.uri,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      title: s.title || s.uri,
+      style: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "3px 8px",
+        borderRadius: 6,
+        background: "var(--surface-up)",
+        border: "1px solid var(--ink-5)",
+        fontSize: 10.5,
+        color: "var(--ink-3)",
+        textDecoration: "none",
+        maxWidth: 190,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, /*#__PURE__*/React.createElement(ExternalLink, {
+      size: 9
+    }), host);
+  }));
+}
+
+/* ── Outreach drafting ──
+   The hardest part of volunteering at 15 isn't finding the role, it's
+   sending the first email. This writes a real first draft from the
+   student's own profile, then gets out of the way so they can edit it. */
+function OutreachModal({
+  opp,
+  student,
+  onClose
+}) {
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr("");
+    try {
+      const t = await draftOutreach(opp, student);
+      if (!t) throw new Error("empty");
+      setText(t);
+    } catch (e) {
+      setErr("Couldn't write a draft just now. Check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [opp, student]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  useEffect(() => {
+    const k = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+  const parts = splitPitch(text);
+  const to = contactEmailOf(opp);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (e) {}
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 300,
+      background: "rgba(12,9,6,.55)",
+      backdropFilter: "blur(3px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "Draft outreach email",
+    className: "card",
+    style: {
+      width: "100%",
+      maxWidth: 560,
+      maxHeight: "88vh",
+      overflow: "auto",
+      padding: 22,
+      background: "var(--surface)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 12,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 19,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.3px"
+    }
+  }, "Your first email"), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close",
+    className: "btn btn-ghost",
+    style: {
+      padding: 7,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 15
+  }))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginBottom: 16,
+      lineHeight: 1.6
+    }
+  }, "A starting point for ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: "var(--ink-2)"
+    }
+  }, opp.org), ". Edit it so it sounds like you — that matters more than getting it perfect."), loading ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      padding: "12px 0"
+    }
+  }, /*#__PURE__*/React.createElement(Shimmer, {
+    w: "50%",
+    h: 13
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "100%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "96%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "88%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "70%",
+    h: 11
+  })) : err ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--danger)",
+      marginBottom: 12
+    }
+  }, err), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: load,
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 13
+  }), " Try again")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    value: text,
+    onChange: e => setText(e.target.value),
+    "aria-label": "Email draft",
+    style: {
+      minHeight: 260,
+      resize: "vertical",
+      lineHeight: 1.7,
+      fontSize: 13
+    }
+  }), !to && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)",
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "We don't have a verified address for this organization, so we won't guess one. Find the real contact on their site, then paste this in."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      marginTop: 14
+    }
+  }, to && /*#__PURE__*/React.createElement("a", {
+    className: "btn btn-fire",
+    href: gmailComposeUrl(to, parts.subject, parts.body),
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5,
+      textDecoration: "none"
+    }
+  }, /*#__PURE__*/React.createElement(Mail, {
+    size: 13
+  }), " Open in Gmail"), to && /*#__PURE__*/React.createElement("a", {
+    className: "btn btn-ghost",
+    href: `mailto:${to}?subject=${encodeURIComponent(parts.subject)}&body=${encodeURIComponent(parts.body)}`,
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5,
+      textDecoration: "none"
+    }
+  }, "Mail app"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: copy,
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5
+    }
+  }, copied ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Check, {
+    size: 13
+  }), " Copied") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Copy, {
+    size: 13
+  }), " Copy")), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: load,
+    style: {
+      padding: "10px 16px",
+      fontSize: 12.5
+    }
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 13
+  }), " Rewrite")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10.5,
+      color: "var(--ink-4)",
+      marginTop: 12,
+      lineHeight: 1.6
+    }
+  }, "Read it before you send. Don't claim anything you haven't actually done."))));
+}
+
+/* Live engine status during the search. Shows what is genuinely running
+   rather than a spinner that means nothing. */
+const ENGINE_STATE_UI = {
+  running: {
+    icon: Loader,
+    cls: "spin",
+    color: "var(--fire)",
+    text: "searching"
+  },
+  done: {
+    icon: CheckCircle,
+    cls: "",
+    color: "var(--success)",
+    text: "found matches"
+  },
+  empty: {
+    icon: Check,
+    cls: "",
+    color: "var(--ink-4)",
+    text: "nothing new"
+  },
+  failed: {
+    icon: AlertCircle,
+    cls: "",
+    color: "var(--ink-4)",
+    text: "unavailable"
+  }
+};
+function EngineProgress({
+  engines,
+  state
+}) {
+  const rows = engines.filter(e => state[e.id]);
+  if (!rows.length) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 320,
+      margin: "0 auto",
+      textAlign: "left",
+      display: "flex",
+      flexDirection: "column",
+      gap: 9
+    },
+    "aria-live": "polite"
+  }, rows.map(e => {
+    const st = ENGINE_STATE_UI[state[e.id]] || ENGINE_STATE_UI.running;
+    const Icon = st.icon;
+    return /*#__PURE__*/React.createElement("div", {
+      key: e.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        fontSize: 12,
+        color: state[e.id] === "running" ? "var(--ink-2)" : "var(--ink-3)"
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      size: 12,
+      color: st.color,
+      className: st.cls
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, e.label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10.5,
+        color: "var(--ink-4)",
+        flexShrink: 0
+      }
+    }, st.text));
+  }));
+}
+
+/* Sort + filter bar for the results list. Nothing here calls the network —
+   it re-orders what the student already has. */
+function ResultControls({
+  sortBy,
+  setSortBy,
+  minVerdict,
+  setMinVerdict,
+  format,
+  setFormat,
+  onlyActionable,
+  setOnlyActionable,
+  counts,
+  judged
+}) {
+  const Btn = ({
+    active,
+    onClick,
+    children,
+    disabled
+  }) => /*#__PURE__*/React.createElement("button", {
+    onClick: onClick,
+    "aria-pressed": active,
+    disabled: disabled,
+    style: {
+      padding: "6px 11px",
+      borderRadius: 8,
+      border: "1.5px solid " + (active ? "var(--fire)" : "var(--ink-5)"),
+      background: active ? "var(--ember)" : "transparent",
+      color: disabled ? "var(--ink-4)" : active ? "var(--fire)" : "var(--ink-3)",
+      fontSize: 11.5,
+      fontWeight: active ? 600 : 500,
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? .5 : 1,
+      fontFamily: "inherit"
+    }
+  }, children);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14,
+      alignItems: "center",
+      padding: "12px 0 18px",
+      borderTop: "1px solid var(--ink-6)",
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Sort"), /*#__PURE__*/React.createElement(Btn, {
+    active: sortBy === "match",
+    onClick: () => setSortBy("match")
+  }, "Best match"), /*#__PURE__*/React.createElement(Btn, {
+    active: sortBy === "time",
+    onClick: () => setSortBy("time")
+  }, "Least time"), /*#__PURE__*/React.createElement(Btn, {
+    active: sortBy === "confidence",
+    onClick: () => setSortBy("confidence")
+  }, "Most certain")), judged && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Show"), /*#__PURE__*/React.createElement(Btn, {
+    active: minVerdict === "all",
+    onClick: () => setMinVerdict("all")
+  }, "All"), /*#__PURE__*/React.createElement(Btn, {
+    active: minVerdict === "good",
+    onClick: () => setMinVerdict("good")
+  }, "Good+ (", counts.good, ")"), /*#__PURE__*/React.createElement(Btn, {
+    active: minVerdict === "strong",
+    onClick: () => setMinVerdict("strong")
+  }, "Strong (", counts.strong, ")")),
+  /* Format and actionability filter on data every result already carries, so
+     they cost nothing and need no second search. Each option shows its own
+     count, which stops a student selecting a filter that silently empties the
+     list — and a zero-count option is disabled rather than merely misleading. */
+  (counts.remote > 0 || counts.onsite > 0) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Format"), /*#__PURE__*/React.createElement(Btn, {
+    active: format === "any",
+    onClick: () => setFormat("any")
+  }, "Any"), /*#__PURE__*/React.createElement(Btn, {
+    active: format === "remote",
+    onClick: () => counts.remote && setFormat("remote"),
+    disabled: !counts.remote
+  }, "Remote (", counts.remote, ")"), /*#__PURE__*/React.createElement(Btn, {
+    active: format === "onsite",
+    onClick: () => counts.onsite && setFormat("onsite"),
+    disabled: !counts.onsite
+  }, "In person (", counts.onsite, ")")), counts.actionable > 0 && /*#__PURE__*/React.createElement(Btn, {
+    active: onlyActionable,
+    onClick: () => setOnlyActionable(v => !v)
+  }, "Can apply now (", counts.actionable, ")"));
+}
+
+/* Honest status about where these results came from. The previous build
+   silently served the offline library whenever the AI failed, which is why
+   every search returned the same things — this says so out loud. */
+function useAIHealth() {
+  const [h, setH] = useState({
+    state: AI_HEALTH.state,
+    detail: AI_HEALTH.detail
+  });
+  useEffect(() => onAIHealth(x => setH({
+    state: x.state,
+    detail: x.detail
+  })), []);
+  return h;
+}
+function AIStatusNotice({
+  health,
+  onOpenSettings
+}) {
+  if (health.state === "live" || health.state === "unknown") return null;
+  const quota = health.state === "quota";
+
+  /* The server is up but has no AI key. This used to surface as "live search
+     couldn't be reached", which is true and useless — it sends you looking at
+     your network instead of at the one setting that's actually missing. */
+  if (health.state === "noserverkey") {
+    return /*#__PURE__*/React.createElement("div", {
+      role: "status",
+      style: {
+        padding: "13px 16px",
+        background: "var(--surface-up)",
+        border: "1px solid var(--ink-5)",
+        borderLeft: "3px solid var(--fire)",
+        borderRadius: 10,
+        marginBottom: 18
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: "var(--ink)",
+        marginBottom: 5,
+        display: "flex",
+        gap: 8,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement(AlertCircle, {
+      size: 14,
+      color: "var(--fire)"
+    }), "Live matching isn't switched on yet"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "var(--ink-2)",
+        lineHeight: 1.7
+      }
+    }, "The site is running, but the server has no AI key, so it can't search the web. Add ", /*#__PURE__*/React.createElement("code", {
+      style: {
+        background: "var(--ember)",
+        color: "var(--fire)",
+        padding: "1px 5px",
+        borderRadius: 4,
+        fontSize: 11.5
+      }
+    }, "ANTHROPIC_API_KEY"), " as an environment variable on your host, then redeploy. Until then these are real organizations from the built-in list, but not tailored to your answers."));
+  }
+  // "nosearch" is a partial outage, not a failure: the AI is still matching
+  // against the profile, it just can't read the live web. Saying "these are
+  // starting points" there would be wrong and would undersell real results.
+  if (health.state === "nosearch") {
+    return /*#__PURE__*/React.createElement("div", {
+      role: "status",
+      style: {
+        padding: "10px 14px",
+        background: "var(--surface-up)",
+        border: "1px solid var(--ink-5)",
+        borderRadius: 10,
+        marginBottom: 18,
+        display: "flex",
+        gap: 9,
+        alignItems: "flex-start",
+        fontSize: 12,
+        color: "var(--ink-2)",
+        lineHeight: 1.6
+      }
+    }, /*#__PURE__*/React.createElement(Search, {
+      size: 13,
+      color: "var(--ink-4)",
+      style: {
+        flexShrink: 0,
+        marginTop: 2
+      }
+    }), /*#__PURE__*/React.createElement("span", null, "These are matched to your profile, but live web search isn't available on this key \u2014 so they come from what the AI already knows rather than today's listings. Check each organization's own site before you email them."));
+  }
+  return /*#__PURE__*/React.createElement("div", {
+    role: "status",
+    style: {
+      padding: "12px 15px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderLeft: "3px solid var(--fire)",
+      borderRadius: 10,
+      marginBottom: 18,
+      display: "flex",
+      gap: 10,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 14,
+    color: "var(--fire)",
+    style: {
+      flexShrink: 0,
+      marginTop: 2
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 3
+    }
+  }, "These are starting points, not live matches"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, health.detail || "Live search is unavailable right now.", " ", "You're seeing the built-in library of real organizations instead — good places to start, but not tailored to what you specifically said.", quota && onOpenSettings ? /*#__PURE__*/React.createElement(React.Fragment, null, " ", /*#__PURE__*/React.createElement("button", {
+    onClick: onOpenSettings,
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 12,
+      textDecoration: "underline"
+    }
+  }, "Add your own free AI key"), " to turn live matching back on.") : null)));
+}
+
+/* Lets a student restore live matching without editing HTML. Their key is
+   stored in this browser only and never sent anywhere except Google. */
+function AIKeyModal({
+  onClose,
+  onSaved
+}) {
+  const [k, setK] = useState(() => {
+    try {
+      return localStorage.getItem("rise_gemini_key") || "";
+    } catch (e) {
+      return "";
+    }
+  });
+  useEffect(() => {
+    const h = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 300,
+      background: "rgba(12,9,6,.55)",
+      backdropFilter: "blur(3px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "Add an AI key",
+    className: "card",
+    style: {
+      width: "100%",
+      maxWidth: 470,
+      padding: 22,
+      background: "var(--surface)"
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 19,
+      fontWeight: 400,
+      color: "var(--ink)",
+      marginBottom: 8
+    }
+  }, "Turn live matching back on"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      marginBottom: 6
+    }
+  }, "RISE ships with a shared free AI key, and everyone using this build draws on the same daily allowance — so it usually runs out. A free key of your own takes about a minute and is yours alone."), /*#__PURE__*/React.createElement("ol", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.9,
+      paddingLeft: 18,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("li", null, "Open ", /*#__PURE__*/React.createElement("a", {
+    href: "https://aistudio.google.com/apikey",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      color: "var(--fire)",
+      fontWeight: 600
+    }
+  }, "aistudio.google.com/apikey")), /*#__PURE__*/React.createElement("li", null, "Click ", /*#__PURE__*/React.createElement("strong", null, "Create API key"), ". No credit card needed."), /*#__PURE__*/React.createElement("li", null, "Paste it below.")), /*#__PURE__*/React.createElement("input", {
+    className: "input",
+    type: "password",
+    value: k,
+    onChange: e => setK(e.target.value),
+    // Not "AIza…" — in DM Sans a capital I is identical to a lowercase l, so the
+    // real key prefix reads as "Alza" and looks like a typo.
+    placeholder: "Paste your key here",
+    "aria-label": "Your Google AI Studio API key",
+    autoComplete: "off",
+    spellCheck: "false"
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)",
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "Stored in this browser only. It never reaches RISE's servers — requests go straight from your device to Google."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginTop: 16,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    },
+    onClick: () => {
+      setGeminiKey(k);
+      onSaved && onSaved();
+      onClose();
+    }
+  }, "Save and retry"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    },
+    onClick: onClose
+  }, "Not now"), k && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      padding: "10px 18px",
+      fontSize: 13,
+      marginLeft: "auto"
+    },
+    onClick: () => {
+      setK("");
+      setGeminiKey("");
+    }
+  }, "Clear"))));
+}
+
+// Parse "2-3 hrs/week" style strings into a number, for the "least time" sort.
+function hoursNum(o) {
+  const m = String(o.hours || o.commitment || "").match(/(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : 99;
+}
+
+/* ═══════════════════════════════════════
+   RESULT CARD
+═══════════════════════════════════════ */
+/* Memoised at the bottom of this component (see `ResultCard = React.memo(...)`).
+   Result lists run to dozens of cards, each with its own expandable sections
+   and an AI insight; without this, unrelated page state — a spinner tick, a
+   filter toggle — re-rendered every card in the list. */
+function ResultCardBase({
+  opp,
+  idx,
+  insight,
+  talLabel,
+  isWeb,
+  isFav,
+  onFav,
+  studentName,
+  studentSkills,
+  student
+}) {
+  const [copied, setCopied] = useState(false);
+  const [showWhy, setShowWhy] = useState(false);
+  const [showDraft, setShowDraft] = useState(false);
+  const [showApply, setShowApply] = useState(false);
+  const verdict = verdictOf(opp);
+  async function share() {
+    const msg = `Found this volunteer spot: ${opp.title} at ${opp.org}. Come with me? ${opp.link}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: opp.title,
+          text: msg,
+          url: opp.link
+        });
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(msg);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = msg;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (e) {}
+  }
+  let host = opp.org;
+  try {
+    host = new URL(opp.link).hostname.replace(/^www\./, "");
+  } catch (e) {}
+  const contactEmail = contactEmailOf(opp);
+  const emailGmailHref = () => gmailComposeUrl(contactEmail, "Volunteer application — " + (opp.title || opp.org), "");
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "result-card pop",
+    style: {
+      padding: "24px",
+      animationDelay: `${idx % 5 * .08}s`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      gap: 12,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      marginBottom: 10,
+      flexWrap: "wrap"
+    }
+  },
+  // Restored sessions have no talent in state — don't render an empty pill.
+  talLabel && /*#__PURE__*/React.createElement("span", {
+    className: "badge badge-fire"
+  }, talLabel), opp._score != null &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge " + VERDICTS[verdict].cls
+  }, VERDICTS[verdict].label),
+  // Only claim a link is checked when the server actually checked it.
+  opp._linkOk === true &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-green",
+    title: "We loaded this link and it responded"
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 9
+  }), "\xA0Link verified"), opp._linkOk === false &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-neutral",
+    title: "This link didn't respond when we checked it"
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 9
+  }), "\xA0Link didn't load"), opp._origin === "web" &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-neutral",
+    title: "Found by searching the web just now"
+  }, "From live search"),
+  // Curated entries are real organizations but broad by design — say so rather
+  // than letting them pass as something tailored to this student.
+  opp._curated &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge badge-neutral",
+    title: "A real organization from our built-in list — not tailored to your answers"
+  }, "Starting point"),
+  /* The badge means a person at RISE checked this organization: confirmed it
+     is a real registered entity, that it plausibly works with youth, and that
+     it attested in writing to screening anyone who contacts minors. It is the
+     strongest claim on the card, so it says what it means on hover. */
+  opp._riseVerified &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge",
+    style: {
+      background: "var(--success-bg)",
+      color: "var(--success)",
+      border: "1px solid rgba(26,107,60,.28)",
+      fontWeight: 700
+    },
+    title: "A person at RISE checked this organization: a real registered entity, working with youth, that has attested to screening anyone who contacts minors."
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 9
+  }), "\xA0RISE Verified"),
+  // Says plainly why a role sits at the bottom, instead of leaving the student
+  // to wonder why a strong-looking match was ranked last.
+  opp._blocked &&
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge",
+    style: {
+      background: "var(--danger-bg)",
+      color: "var(--danger)",
+      border: "1px solid rgba(196,40,40,.22)"
+    },
+    title: opp._blocked
+  }, "⚠︎ ", opp._blocked)), /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.4px",
+      marginBottom: 3,
+      lineHeight: 1.2
+    }
+  }, opp.title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--fire)"
+    }
+  }, opp.org)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 3,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(ScoreDial, {
+    score: opp._score,
+    verdict: verdict
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      color: "var(--ink-4)",
+      textTransform: "uppercase",
+      letterSpacing: ".08em"
+    }
+  }, "Match"))), opp.tagline &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-2)",
+      fontStyle: "italic",
+      marginBottom: 12,
+      lineHeight: 1.65
+    }
+  }, "\"", opp.tagline, "\""), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.85,
+      marginBottom: opp.commitment || opp.requirements || opp.firstStep ? 12 : 16
+    }
+  }, opp.role || opp.desc), (opp.commitment || opp.requirements) &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 7,
+      marginBottom: 12
+    }
+  }, opp.commitment &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 5,
+      padding: "5px 10px",
+      borderRadius: 7,
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      fontSize: 11.5,
+      color: "var(--ink-2)"
+    }
+  }, /*#__PURE__*/React.createElement(Clock, {
+    size: 10,
+    color: "var(--ink-4)"
+  }), opp.commitment), opp.requirements && !/^none/i.test(opp.requirements) &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 5,
+      padding: "5px 10px",
+      borderRadius: 7,
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      fontSize: 11.5,
+      color: "var(--ink-2)"
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 10,
+    color: "var(--ink-4)"
+  }), opp.requirements)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "14px 16px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement(Sparkles, {
+    size: 11,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em"
+    }
+  }, "Why this fits you")),
+  // The judge's evidence line replaces the generator's own pitch once it lands,
+  // because it names the duty rather than selling the role.
+  insight || opp.whyMatch ?
+  /*#__PURE__*/
+  React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.8,
+      fontStyle: "italic"
+    }
+  }, insight || opp.whyMatch) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 5
+    }
+  }, /*#__PURE__*/React.createElement(Shimmer, {
+    w: "88%",
+    h: 11
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    w: "64%",
+    h: 11
+  }))),
+  // Scoring transparency: the breakdown is opt-in so the card stays calm,
+  // but it's one tap away and shows the parts the model was unsure about.
+  opp._judge &&
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowWhy(v => !v),
+    "aria-expanded": showWhy,
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 5,
+      background: "none",
+      border: "none",
+      padding: "2px 0",
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--fire)"
+    }
+  }, /*#__PURE__*/React.createElement(ChevronRight, {
+    size: 11,
+    style: {
+      transform: showWhy ? "rotate(90deg)" : "none",
+      transition: "transform .18s"
+    }
+  }), showWhy ? "Hide scoring" : "How this was scored"), showWhy && /*#__PURE__*/React.createElement(ScoreBreakdown, {
+    opp: opp
+  })), /*#__PURE__*/React.createElement(SourceChips, {
+    sources: opp._sources
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      flexWrap: "wrap",
+      marginBottom: 16,
+      alignItems: "center"
+    }
+  }, opp.where &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement(MapPin, {
+    size: 11,
+    color: "var(--ink-4)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)"
+    }
+  }, opp.where)), opp.hours &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement(Clock, {
+    size: 11,
+    color: "var(--ink-4)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)"
+    }
+  }, opp.hours)), (opp.tags || []).slice(0, 2).map((t, i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    key: i,
+    className: "badge badge-neutral"
+  }, t))), opp.firstStep &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "11px 14px",
+      background: "var(--ember)",
+      borderRadius: 9,
+      marginBottom: 16,
+      display: "flex",
+      gap: 9,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 13,
+    color: "var(--fire)",
+    style: {
+      flexShrink: 0,
+      marginTop: 2
+    }
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 3
+    }
+  }, "How to start"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, opp.firstStep))), contactEmail &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("a", {
+    href: emailGmailHref(),
+    target: "_blank",
+    rel: "noreferrer",
+    className: "press",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      textDecoration: "none",
+      padding: "10px 14px",
+      marginBottom: 16,
+      borderRadius: 9,
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.borderColor = "var(--fire)";
+      e.currentTarget.style.background = "var(--ember)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.borderColor = "var(--ink-5)";
+      e.currentTarget.style.background = "var(--surface-up)";
+    },
+    title: "Email " + contactEmail + " (opens Gmail)"
+  }, /*#__PURE__*/React.createElement(Mail, {
+    size: 14,
+    color: "var(--fire)",
+    style: {
+      flexShrink: 0
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".08em",
+      marginBottom: 1
+    }
+  }, "Who to contact"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink)",
+      fontWeight: 600,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, contactEmail)), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      flexShrink: 0,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 4
+    }
+  }, "Email ", /*#__PURE__*/React.createElement(ExternalLink, {
+    size: 10,
+    color: "var(--fire)"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  },
+  /* When the matcher has walked the site and found the actual application
+     form, send the student there rather than to the front door. Landing on a
+     homepage and hunting for "Get Involved" is where most of them quietly give
+     up, and it is the whole reason the deep fetch exists.
+
+     Falls back to the organization's page whenever no form was found, which is
+     the honest outcome for charities that take applications by email. */
+  /*#__PURE__*/React.createElement("a", {
+    href: opp.applyLink || opp.link,
+    target: "_blank",
+    rel: "noreferrer",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "9px 16px",
+      background: "var(--ink)",
+      color: "var(--canvas)",
+      borderRadius: 8,
+      fontSize: 13,
+      fontWeight: 600,
+      textDecoration: "none",
+      transition: "opacity .18s"
+    },
+    onMouseEnter: e => e.currentTarget.style.opacity = ".78",
+    onMouseLeave: e => e.currentTarget.style.opacity = "1"
+  }, opp.applyLink ? "Apply" : "Visit " + host, " ", /*#__PURE__*/React.createElement(ExternalLink, {
+    size: 11
+  })),
+  /* Age floors and police checks decide whether a 14 year old can apply at
+     all. Shown next to the button rather than buried in the description,
+     because finding out at the door is the worst place to find out. Only
+     rendered when the page actually stated it; silence here means unknown,
+     never "no requirement". */
+  (opp.minAge || opp.screening) && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11.5,
+      fontWeight: 600,
+      color: "var(--muted)",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      flexShrink: 0
+    }
+  }, [opp.minAge ? opp.minAge + "+" : null, opp.screening || null].filter(Boolean).join("  \u00b7  ")),
+  // Writing the first email is the step most students stall on, so it gets a
+  // button of its own rather than living in a menu.
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => setShowDraft(true),
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "9px 14px",
+      background: "var(--ember)",
+      color: "var(--fire)",
+      border: "1.5px solid var(--ember-bd)",
+      borderRadius: 8,
+      fontSize: 12.5,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit"
+    }
+  }, /*#__PURE__*/React.createElement(Sparkles, {
+    size: 12
+  }), " Draft my email"),
+  /* Applying inside RISE exists only for RISE Verified postings, because it
+     is the only case where a person has checked who is on the other end.
+     Everything else still routes to the organization's own page, where the
+     student is dealing with them directly and RISE is not implying it
+     vouched for anyone. */
+  opp._riseVerified && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowApply(true),
+    className: "btn btn-fire",
+    style: {
+      padding: "9px 14px",
+      fontSize: 12.5
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 12
+  }), " Apply through RISE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginLeft: "auto",
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => onFav(opp),
+    "aria-label": isFav ? "Remove from favorites" : "Save to favorites",
+    "aria-pressed": isFav,
+    title: isFav ? "Saved" : "Save",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: 34,
+      height: 34,
+      borderRadius: 8,
+      border: "1.5px solid " + (isFav ? "var(--fire)" : "var(--ink-5)"),
+      background: isFav ? "rgba(214,86,12,.08)" : "transparent",
+      cursor: "pointer",
+      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+    }
+  }, /*#__PURE__*/React.createElement(Heart, {
+    size: 15,
+    color: isFav ? "var(--fire)" : "var(--ink-3)",
+    fill: isFav ? "var(--fire)" : "none"
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: share,
+    "aria-label": "Share this opportunity",
+    title: "Share",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "0 12px",
+      height: 34,
+      borderRadius: 8,
+      border: "1.5px solid var(--ink-5)",
+      background: "transparent",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      fontFamily: "'DM Sans', sans-serif",
+      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+    }
+  }, copied ? "Copied!" : "Share")))), showDraft && /*#__PURE__*/React.createElement(OutreachModal, {
+    opp: opp,
+    student: student || {
+      name: studentName,
+      skills: studentSkills
+    },
+    onClose: () => setShowDraft(false)
+  }), showApply && /*#__PURE__*/React.createElement(ApplyModal, {
+    opp: opp,
+    profile: student || {
+      name: studentName,
+      skills: studentSkills
+    },
+    onClose: () => setShowApply(false)
+  }));
+}
+/* Default shallow comparison is right here: every prop is a primitive, or an
+   object whose identity is now stable (`student` is memoised upstream, `onFav`
+   is a useCallback). */
+const ResultCard = React.memo(ResultCardBase);
+
+/* ═══════════════════════════════════════
+   FAVORITES
+═══════════════════════════════════════ */
+function FavoritesPage({
+  favs,
+  toggleFav,
+  go
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    className: "page-wrap",
+    style: {
+      maxWidth: 720,
+      margin: "0 auto",
+      padding: "48px 20px 70px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 26
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge badge-fire",
+    style: {
+      marginBottom: 12,
+      display: "inline-flex"
+    }
+  }, "Saved for later"), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(28px,5vw,40px)",
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      marginBottom: 7
+    }
+  }, "Your ", /*#__PURE__*/React.createElement("em", {
+    style: {
+      color: "var(--fire)"
+    }
+  }, "favorites")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, favs.length, " saved ", favs.length === 1 ? "opportunity" : "opportunities", ". Tap the heart on any to remove it.")), favs.map((opp, i) => {
+    let host = opp.org;
+    try {
+      host = new URL(opp.link).hostname.replace(/^www\./, "");
+    } catch (e) {}
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+      key: i,
+      className: "result-card pop",
+      style: {
+        padding: "22px",
+        marginBottom: 14,
+        animationDelay: `${i % 5 * .06}s`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("h3", {
+      className: "serif",
+      style: {
+        fontSize: 19,
+        color: "var(--ink)",
+        marginBottom: 3
+      }
+    }, opp.title), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: "var(--fire)",
+        marginBottom: 8
+      }
+    }, opp.org), opp.tagline &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("p", {
+      style: {
+        fontSize: 13,
+        color: "var(--ink-2)",
+        fontStyle: "italic",
+        marginBottom: 8
+      }
+    }, "\"", opp.tagline, "\""), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 14,
+        flexWrap: "wrap",
+        alignItems: "center"
+      }
+    }, opp.where &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: "var(--ink-3)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4
+      }
+    }, /*#__PURE__*/React.createElement(MapPin, {
+      size: 11,
+      color: "var(--ink-4)"
+    }), opp.where), opp.hours &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: "var(--ink-3)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4
+      }
+    }, /*#__PURE__*/React.createElement(Clock, {
+      size: 11,
+      color: "var(--ink-4)"
+    }), opp.hours))), /*#__PURE__*/React.createElement("button", {
+      onClick: () => toggleFav(opp),
+      "aria-label": "Remove from favorites",
+      title: "Remove",
+      style: {
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 34,
+        height: 34,
+        borderRadius: 8,
+        flexShrink: 0,
+        border: "1.5px solid var(--fire)",
+        background: "rgba(214,86,12,.08)",
+        cursor: "pointer"
+      }
+    }, /*#__PURE__*/React.createElement(Heart, {
+      size: 15,
+      color: "var(--fire)",
+      fill: "var(--fire)"
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 14
+      }
+    }, /*#__PURE__*/React.createElement("a", {
+      href: opp.link,
+      target: "_blank",
+      rel: "noreferrer",
+      style: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "9px 16px",
+        background: "var(--ink)",
+        color: "var(--canvas)",
+        borderRadius: 8,
+        fontSize: 13,
+        fontWeight: 600,
+        textDecoration: "none"
+      }
+    }, "Visit ", host, " ", /*#__PURE__*/React.createElement(ExternalLink, {
+      size: 11
+    }))));
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: () => go("match"),
+    style: {
+      padding: "10px 18px",
+      fontSize: 13,
+      marginTop: 8
+    }
+  }, "Find more matches"));
+}
+
+/* ═══════════════════════════════════════
+   NAV
+═══════════════════════════════════════ */
+/* ── Optional sign-in UI ── */
+const GoogleG = () =>
+/*#__PURE__*/
+/*#__PURE__*/
+React.createElement("svg", {
+  width: "15",
+  height: "15",
+  viewBox: "0 0 24 24"
+}, /*#__PURE__*/React.createElement("path", {
+  fill: "#4285F4",
+  d: "M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"
+}), /*#__PURE__*/React.createElement("path", {
+  fill: "#34A853",
+  d: "M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"
+}), /*#__PURE__*/React.createElement("path", {
+  fill: "#FBBC05",
+  d: "M5.84 14.1A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.44.34-2.1V7.06H2.18A11 11 0 0 0 1 12c0 1.78.43 3.45 1.18 4.94l3.66-2.84z"
+}), /*#__PURE__*/React.createElement("path", {
+  fill: "#EA4335",
+  d: "M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.06l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38z"
+}));
+function SignInModal({
+  open,
+  onClose,
+  initialMode
+}) {
+  const [mode, setMode] = useState(initialMode || "signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const user = useAuth();
+  useEffect(() => {
+    if (user && open) onClose();
+  }, [user, open]);
+  useEffect(() => {
+    if (open) {
+      setErr("");
+      setNotice("");
+      setPw("");
+      if (initialMode) setMode(initialMode);
+    }
+  }, [open, initialMode]);
+  // Escape closes the modal — expected of any dialog, and the only way out
+  // for keyboard users, who cannot reach the corner ✕ before the inputs.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  const friendly = e => {
+    const c = e?.code || "";
+    const m = e?.message || "";
+    if (c.includes("invalid-email")) return "That email doesn't look right.";
+    if (c.includes("weak-password")) return "Password needs at least 6 characters.";
+    if (c.includes("email-already-in-use")) return "That email already has an account - try logging in.";
+    if (c.includes("invalid-credential") || c.includes("wrong-password") || c.includes("user-not-found")) return "Email or password is incorrect.";
+    if (c.includes("popup-closed")) return "";
+    /* Supabase reports these as plain message text with no `code`, so the
+       checks above never caught them and its raw wording reached the user —
+       "Invalid login credentials" reads like a system fault rather than a
+       typo. Match on the message too. */
+    if (/invalid login credentials|invalid.*grant/i.test(m)) return "Email or password is incorrect.";
+    if (/email not confirmed/i.test(m)) return "Check your email to confirm your account, then sign in.";
+    if (/password should be at least/i.test(m)) return "Password needs at least 6 characters.";
+    if (/user already registered|already been registered/i.test(m)) return "That email already has an account - try logging in.";
+    if (/unable to validate email|invalid format/i.test(m)) return "That email doesn't look right.";
+    if (/rate limit|too many requests/i.test(m)) return "Too many attempts. Wait a minute and try again.";
+    // Raw browser fetch failures -> actionable message
+    if (/load failed|failed to fetch|networkerror/i.test(m)) return "Couldn't reach the sign-in server. Your Supabase project may be paused (free projects pause after ~1 week idle) - open the Supabase dashboard and resume it, then try again.";
+    return m || "Something went wrong - try again.";
+  };
+  const run = async fn => {
+    setErr("");
+    setNotice("");
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      setErr(friendly(e));
+    }
+    setBusy(false);
+  };
+  // Single submit path shared by the button and by Enter in any field. This
+  // lives on a real <form>: previously only the password input listened for
+  // Enter, so pressing it from the email or username field did nothing at all
+  // and the form felt broken. A form also lets password managers recognise
+  // the pair and offer to save credentials.
+  const canSubmit = !busy && email.trim() && pw && !(mode === "signup" && !username.trim());
+  const submit = e => {
+    if (e) e.preventDefault();
+    if (!canSubmit) return;
+    run(async () => {
+      if (mode === "signin") return window.riseCloud.signInEmail(email, pw);
+      const res = await window.riseCloud.signUpEmail(email, pw, username);
+      // Sign-up can legitimately succeed without a session when the project
+      // requires email confirmation. That is good news, not an error — it used
+      // to be thrown and rendered in the red error box.
+      if (res && res.needsConfirmation) {
+        setNotice("Account created. Check your email to confirm, then sign in.");
+        setMode("signin");
+        setPw("");
+      }
+    });
+  };
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(22,17,10,.45)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+      backdropFilter: "blur(3px)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    className: "card-flat",
+    style: {
+      width: "100%",
+      maxWidth: 400,
+      padding: "28px 26px",
+      background: "var(--surface)",
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close",
+    style: {
+      position: "absolute",
+      top: 14,
+      right: 14,
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      color: "var(--ink-3)",
+      padding: 4
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 16
+  })), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 24,
+      color: "var(--ink)",
+      marginBottom: 5
+    }
+  }, mode === "signin" ? "Welcome back" : "Create an account"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.6,
+      marginBottom: 6
+    }
+  }, mode === "signin" ? "Sign in to see your hours on any device." : "Save your hours to the cloud and access them anywhere."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      lineHeight: 1.55,
+      marginBottom: 20,
+      display: "flex",
+      alignItems: "center",
+      gap: 5
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 11,
+    color: "var(--success)"
+  }), " Optional - sign in only to sync your progress across devices."), err &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "9px 13px",
+      background: "rgba(190,50,50,.06)",
+      border: "1px solid rgba(190,50,50,.2)",
+      borderRadius: 9,
+      color: "#B03232",
+      fontSize: 12,
+      display: "flex",
+      gap: 7,
+      alignItems: "center",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 12
+  }), err), notice &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "9px 13px",
+      background: "var(--success-bg)",
+      border: "1px solid rgba(26,107,60,.22)",
+      borderRadius: 9,
+      color: "var(--success)",
+      fontSize: 12,
+      display: "flex",
+      gap: 7,
+      alignItems: "center",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 12
+  }), notice), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    disabled: busy,
+    onClick: () => run(() => window.riseCloud.signInGoogle()),
+    style: {
+      width: "100%",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 9,
+      padding: "11px 16px",
+      background: "var(--surface)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)",
+      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s",
+      opacity: busy ? .6 : 1
+    },
+    onMouseEnter: e => e.currentTarget.style.borderColor = "var(--ink-4)",
+    onMouseLeave: e => e.currentTarget.style.borderColor = "var(--ink-5)"
+  }, /*#__PURE__*/React.createElement(GoogleG, null), " Continue with Google"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      margin: "18px 0"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      height: 1,
+      background: "var(--ink-6)"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "var(--ink-4)",
+      fontWeight: 600,
+      letterSpacing: ".08em"
+    }
+  }, "OR"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      height: 1,
+      background: "var(--ink-6)"
+    }
+  })), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    noValidate: true
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10,
+      marginBottom: 16
+    }
+  }, mode === "signup" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("input", {
+    className: "input",
+    type: "text",
+    placeholder: "Username",
+    value: username,
+    onChange: e => setUsername(e.target.value),
+    autoComplete: "username",
+    maxLength: 30
+  }), /*#__PURE__*/React.createElement("input", {
+    className: "input",
+    type: "email",
+    placeholder: "Email address",
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    autoComplete: "email",
+    autoFocus: true,
+    inputMode: "email"
+  }), /*#__PURE__*/React.createElement("input", {
+    className: "input",
+    type: "password",
+    placeholder: mode === "signup" ? "Password (6+ characters)" : "Password",
+    value: pw,
+    onChange: e => setPw(e.target.value),
+    autoComplete: mode === "signup" ? "new-password" : "current-password"
+  })), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: !canSubmit,
+    className: "btn btn-fire",
+    style: {
+      width: "100%",
+      padding: "11px 16px",
+      fontSize: 13,
+      justifyContent: "center"
+    }
+  }, busy ? "One moment…" : mode === "signin" ? "Sign In" : "Create Account")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      textAlign: "center",
+      marginTop: 16
+    }
+  }, mode === "signin" ? "New to RISE?" : "Already have an account?", " ", /*#__PURE__*/React.createElement("span", {
+    onClick: () => {
+      setMode(mode === "signin" ? "signup" : "signin");
+      setErr("");
+    },
+    style: {
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, mode === "signin" ? "Create an account" : "Sign in"))));
+}
+function AuthButton({
+  openModal,
+  openSignup,
+  setPage
+}) {
+  const user = useAuth();
+  const [menu, setMenu] = useState(false);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [menu]);
+  if (!user) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 7
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: openModal,
+      className: "press",
+      style: {
+        padding: "6px 13px",
+        background: "transparent",
+        border: "1px solid var(--ink-5)",
+        borderRadius: 8,
+        cursor: "pointer",
+        fontFamily: "'DM Sans',sans-serif",
+        fontSize: 12,
+        fontWeight: 600,
+        color: "var(--ink-2)",
+        transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+      },
+      onMouseEnter: e => {
+        e.currentTarget.style.borderColor = "var(--fire)";
+        e.currentTarget.style.color = "var(--fire)";
+      },
+      onMouseLeave: e => {
+        e.currentTarget.style.borderColor = "var(--ink-5)";
+        e.currentTarget.style.color = "var(--ink-2)";
+      }
+    }, "Log in"), /*#__PURE__*/React.createElement("button", {
+      onClick: openSignup,
+      className: "btn btn-fire press",
+      style: {
+        padding: "6px 14px",
+        fontSize: 12,
+        borderRadius: 8
+      }
+    }, "Sign up"));
+  }
+  const display = user.username || user.name || (user.email || "").split("@")[0];
+  const initial = (display || "?").charAt(0).toUpperCase();
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative"
+    },
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPage("profile"),
+    "aria-label": "Your profile",
+    title: "Your profile",
+    className: "press",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "4px 10px 4px 4px",
+      borderRadius: 999,
+      border: "1.5px solid var(--ember-bd)",
+      background: "var(--ember)",
+      cursor: "pointer",
+      fontFamily: "inherit",
+      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.borderColor = "var(--fire)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.borderColor = "var(--ember-bd)";
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 26,
+      height: 26,
+      borderRadius: "50%",
+      background: "var(--fire)",
+      color: "#fff",
+      fontWeight: 700,
+      fontSize: 12,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0
+    }
+  }, initial), /*#__PURE__*/React.createElement("span", {
+    className: "auth-name",
+    style: {
+      fontSize: 12.5,
+      fontWeight: 700,
+      color: "var(--ink)",
+      maxWidth: 110,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, display)));
+}
+function Nav({
+  page,
+  setPage,
+  openSignIn,
+  openSignup,
+  favCount
+}) {
+  /* The link strip scrolls horizontally on narrow screens. Left alone it cut
+     "My Hours" to "My H" with nothing to suggest the rest was reachable —
+     it just read as a broken label. Flag the overflow so CSS can fade the
+     trailing edge, and only when there is genuinely something hidden. */
+  const navLinksRef = useRef(null);
+  useEffect(() => {
+    const el = navLinksRef.current;
+    if (!el) return;
+    const sync = () => {
+      const hidden = el.scrollWidth - el.clientWidth - el.scrollLeft;
+      el.dataset.overflowing = hidden > 4 ? "true" : "false";
+    };
+    sync();
+    el.addEventListener("scroll", sync, {
+      passive: true
+    });
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(sync) : null;
+    if (ro) ro.observe(el);
+    window.addEventListener("resize", sync);
+    return () => {
+      el.removeEventListener("scroll", sync);
+      if (ro) ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [page, favCount]);
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("nav", {
+    style: {
+      background: "var(--nav-bg)",
+      borderBottom: "1px solid var(--nav-bd)",
+      position: "sticky",
+      top: 0,
+      zIndex: 100,
+      backdropFilter: "blur(14px)",
+      WebkitBackdropFilter: "blur(14px)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "nav-bar",
+    style: {
+      maxWidth: 1200,
+      margin: "0 auto",
+      padding: "0 24px",
+      height: 56,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      cursor: "pointer",
+      flexShrink: 0
+    },
+    onClick: () => setPage("home")
+  }, /*#__PURE__*/React.createElement("img", {
+    src: "data:image/png;base64,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",
+    alt: "RISE logo",
+    style: {
+      width: 32,
+      height: 32,
+      objectFit: "contain",
+      display: "block"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      color: "var(--ink)",
+      letterSpacing: "-.3px",
+      lineHeight: 1
+    }
+  }, "RISE")), /*#__PURE__*/React.createElement("div", {
+    className: "nav-links",
+    ref: navLinksRef,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 26
+    }
+  }, [["home", "Home"], ["match", "Find Matches"], ["hours", "My Hours"], ...(favCount > 0 ? [["favorites", "Favorites"]] : []), ["about", "About"]].map(([id, lbl]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    key: id,
+    className: `nav-link${page === id ? " active" : ""}`,
+    onClick: () => setPage(id)
+  }, lbl))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(AuthButton, {
+    openModal: openSignIn,
+    openSignup: openSignup,
+    setPage: setPage
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPage("settings"),
+    "aria-label": "Settings",
+    style: {
+      width: 32,
+      height: 32,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: page === "settings" ? "var(--ember)" : "transparent",
+      border: `1px solid ${page === "settings" ? "var(--ember-bd)" : "transparent"}`,
+      borderRadius: 7,
+      cursor: "pointer",
+      color: page === "settings" ? "var(--fire)" : "var(--ink-3)",
+      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+    }
+  }, /*#__PURE__*/React.createElement(Settings, {
+    size: 14
+  })))));
+}
+
+/* ═══════════════════════════════════════
+   HOME
+═══════════════════════════════════════ */
+function HomePage({
+  setPage
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 1200,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "72px 24px 80px",
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 56,
+      alignItems: "center"
+    },
+    className: "hero-grid"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "fu",
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".12em",
+      marginBottom: 24
+    }
+  }, COPY.eyebrow), /*#__PURE__*/React.createElement("h1", {
+    className: "fu1 serif",
+    style: {
+      fontSize: "clamp(50px,6vw,82px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-2px",
+      lineHeight: 1.0,
+      marginBottom: 22
+    }
+  }, "Turn talent", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("em", {
+    style: {
+      color: "var(--fire)"
+    }
+  }, "into impact.")), /*#__PURE__*/React.createElement("p", {
+    className: "fu2",
+    style: {
+      fontSize: 16,
+      color: "var(--ink-2)",
+      lineHeight: 1.85,
+      maxWidth: 400,
+      marginBottom: 32
+    }
+  }, COPY.heroLede), /*#__PURE__*/React.createElement("div", {
+    className: "fu3",
+    style: {
+      display: "flex",
+      gap: 10,
+      flexWrap: "wrap",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: () => setPage("match"),
+    style: {
+      padding: "13px 22px",
+      fontSize: 14
+    }
+  }, "Find my match ", /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 14
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: () => setPage("hours"),
+    style: {
+      padding: "13px 18px",
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement(Clock, {
+    size: 13
+  }), " Track hours"))), /*#__PURE__*/React.createElement("div", {
+    className: "fu2",
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card-ink",
+    style: {
+      padding: "20px 22px",
+      display: "flex",
+      alignItems: "center",
+      gap: 20
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 44,
+      lineHeight: 1,
+      color: "var(--canvas)",
+      letterSpacing: "-2px",
+      flexShrink: 0,
+      width: 70
+    }
+  }, "60+"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: "color-mix(in srgb, var(--canvas) 92%, transparent)",
+      marginBottom: 2
+    }
+  }, COPY.statBigLabel), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "color-mix(in srgb, var(--canvas) 60%, transparent)"
+    }
+  }, COPY.statBigSub))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10
+    },
+    className: "stat-row"
+  }, [{
+    n: "6",
+    l: "Talent categories",
+    s: "Music, sports & more"
+  }, {
+    n: COPY.statThirdNum,
+    l: COPY.statThirdLabel,
+    s: COPY.statThirdSub
+  }].map((s, i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: i,
+    className: "card",
+    style: {
+      padding: "18px 20px"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 34,
+      lineHeight: 1,
+      color: "var(--fire)",
+      letterSpacing: "-1.5px",
+      display: "block",
+      marginBottom: 7
+    }
+  }, s.n), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 2
+    }
+  }, s.l), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)"
+    }
+  }, s.s)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "11px 16px",
+      background: "var(--surface-warm)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10
+    }
+  }, /*#__PURE__*/React.createElement(Zap, {
+    size: 13,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)"
+    }
+  }, "Matched to a real role that needs your specific skill - not a list of ideas")))), /*#__PURE__*/React.createElement("div", {
+    className: "marquee-wrap",
+    style: {
+      borderTop: "1px solid var(--ink-5)",
+      borderBottom: "1px solid var(--ink-5)",
+      padding: "12px 0",
+      background: "var(--surface)",
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "marquee-inner"
+  }, [...Array(2)].map((_, pass) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: pass,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      flexShrink: 0
+    }
+  }, COPY.marquee.map((t, i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    key: i,
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 20,
+      padding: "0 24px",
+      fontSize: 12,
+      fontWeight: 500,
+      color: "var(--ink-3)",
+      letterSpacing: ".04em",
+      whiteSpace: "nowrap"
+    }
+  }, t, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--fire-light)",
+      fontWeight: 300
+    }
+  }, "-"))))))), /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "88px 24px",
+      display: "grid",
+      gridTemplateColumns: "1fr 2fr",
+      gap: 64,
+      alignItems: "start"
+    },
+    className: "steps-grid"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 2,
+      height: 28,
+      background: "var(--fire)",
+      marginBottom: 16
+    }
+  }), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(28px,3.5vw,44px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1.1,
+      marginBottom: 14
+    }
+  }, "From quiz", /*#__PURE__*/React.createElement("br", null), "to opportunity."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-3)",
+      lineHeight: 1.75
+    }
+  }, "Five questions.", /*#__PURE__*/React.createElement("br", null), "Real matches in your city.")), /*#__PURE__*/React.createElement("div", null, [{
+    n: "01",
+    title: "Tell us who you are",
+    body: "Name, city, talent, specific skill, and availability. Nothing is stored off your device, ever."
+  }, {
+    n: "02",
+    title: "Get matched to real needs",
+    body: "RISE finds organizations that need exactly what you offer - not generic volunteer slots."
+  }, {
+    n: "03",
+    title: "Serve, lead, and grow",
+    body: "Apply directly, make your impact, log hours toward your province's requirement - like Ontario's 40-hour OSSD - and build a real portfolio."
+  }].map((s, i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 24,
+      padding: "26px 0",
+      borderBottom: i < 2 ? "1px solid var(--ink-5)" : "none",
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 44,
+      lineHeight: 1.05,
+      color: "var(--ink-5)",
+      letterSpacing: "-2px",
+      flexShrink: 0,
+      width: 52,
+      paddingTop: 1
+    }
+  }, s.n), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 7,
+      letterSpacing: "-.3px"
+    }
+  }, s.title), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-3)",
+      lineHeight: 1.8
+    }
+  }, s.body)))))), /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "0 24px 88px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      gap: 16,
+      flexWrap: "wrap",
+      marginBottom: 36
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(26px,3.2vw,40px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px"
+    }
+  }, "What do you bring?"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "If you do it, a community somewhere needs exactly that.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10
+    },
+    className: "tal-grid"
+  }, TALENTS.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: t.id,
+    className: "card-lift",
+    onClick: () => setPage("match"),
+    style: {
+      padding: "22px 20px",
+      cursor: "pointer",
+      display: "flex",
+      flexDirection: "column",
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 40,
+      height: 40,
+      background: "var(--ember)",
+      borderRadius: 10,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(t.Icon, {
+    size: 18,
+    color: "var(--fire)"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 3
+    }
+  }, t.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      lineHeight: 1.5
+    }
+  }, t.desc)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      color: "var(--fire)",
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, "Explore ", /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 12
+  })))))), /*#__PURE__*/React.createElement("section", {
+    style: {
+      margin: "0 24px 88px",
+      background: "var(--ink)",
+      borderRadius: 22,
+      padding: "60px 52px",
+      overflow: "hidden",
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      right: 36,
+      top: "50%",
+      transform: "translateY(-50%)",
+      fontFamily: "'DM Serif Display',serif",
+      fontSize: 260,
+      lineHeight: 1,
+      color: "color-mix(in srgb, var(--canvas) 7%, transparent)",
+      pointerEvents: "none",
+      userSelect: "none",
+      letterSpacing: "-5px"
+    }
+  }, "RISE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "color-mix(in srgb, var(--canvas) 70%, transparent)",
+      textTransform: "uppercase",
+      letterSpacing: ".14em",
+      marginBottom: 32
+    }
+  }, "What we stand for"), [["R", "Resilience", "Young people who keep showing up - for their communities and themselves."], ["I", "Inclusion", "Every talent counts. Every student has something valuable to offer."], ["S", "Service", "Free tutoring, coaching, performances, and care - delivered where it's needed."], ["E", "Empowerment", "Turning service hours into leadership, portfolios, and open doors."]].map(([L, t, d], i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 22,
+      padding: "22px 0",
+      borderBottom: i < 3 ? "1px solid color-mix(in srgb, var(--canvas) 12%, transparent)" : "none",
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 26,
+      color: "var(--fire-light)",
+      width: 26,
+      flexShrink: 0,
+      lineHeight: 1.25
+    }
+  }, L), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 19,
+      color: "color-mix(in srgb, var(--canvas) 95%, transparent)",
+      marginBottom: 5,
+      letterSpacing: "-.3px"
+    }
+  }, t), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "color-mix(in srgb, var(--canvas) 72%, transparent)",
+      lineHeight: 1.8
+    }
+  }, d)))))), /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "0 24px 88px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 1,
+      background: "var(--ink-5)",
+      marginBottom: 20
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      gap: 16,
+      flexWrap: "wrap",
+      marginBottom: 36
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(24px,3vw,36px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px"
+    }
+  }, "Signature programs"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".08em"
+    }
+  }, "Built by students")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 10
+    },
+    className: "prog-grid"
+  }, [{
+    Icon: TrendingUp,
+    dark: false,
+    title: "Finance Forward",
+    body: "Youth-led financial literacy - students teaching students about budgeting, TFSAs, and smart money habits."
+  }, {
+    Icon: Music,
+    dark: true,
+    title: "Music for Smiles",
+    body: "Student musicians performing at hospitals, senior homes, and community events - live music where it matters."
+  }, {
+    Icon: GraduationCap,
+    dark: false,
+    title: "40-Hour Program",
+    body: "Ontario's structured pathway: get matched, log hours, graduate with a real service portfolio."
+  }].map((p, i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: i,
+    className: "card",
+    style: {
+      padding: "26px 22px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 40,
+      height: 40,
+      borderRadius: 10,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 16,
+      background: p.dark ? "var(--ink)" : "var(--ember)"
+    }
+  }, /*#__PURE__*/React.createElement(p.Icon, {
+    size: 17,
+    color: p.dark ? "var(--canvas)" : "var(--fire)"
+  })), /*#__PURE__*/React.createElement("h3", {
+    style: {
+      fontSize: 15,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 8,
+      letterSpacing: "-.3px"
+    }
+  }, p.title), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.85
+    }
+  }, p.body))))), /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "0 24px 88px",
+      display: "grid",
+      gridTemplateColumns: "3fr 2fr",
+      gap: 48,
+      alignItems: "start"
+    },
+    className: "story-grid"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 1,
+      background: "var(--ink-5)",
+      marginBottom: 20
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 18
+    }
+  }, "The story"), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(26px,3.2vw,40px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1.1,
+      marginBottom: 18
+    }
+  }, "Built by students,", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("em", null, "for students.")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 15,
+      color: "var(--ink-2)",
+      lineHeight: 1.9,
+      marginBottom: 24,
+      maxWidth: 440
+    }
+  }, "RISE was founded by twin brothers Neil and Rayan Mekouar to make community service feel like an extension of who a student already is - not a box to grudgingly tick."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPage("about"),
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      background: "none",
+      border: "none",
+      padding: 0,
+      marginBottom: 24,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 14,
+      fontWeight: 600,
+      color: "var(--fire)"
+    }
+  }, "Read our full story ", /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 14
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      flexWrap: "wrap"
+    }
+  }, [["Neil Mekouar", "Product & Engineering"], ["Rayan Mekouar", "Partnerships & Outreach"]].map(([n, r]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: n,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "10px 14px",
+      background: "var(--surface)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 28,
+      height: 28,
+      borderRadius: "50%",
+      background: "var(--ember)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(User, {
+    size: 12,
+    color: "var(--fire)"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)"
+    }
+  }, n), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)"
+    }
+  }, r)))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--fire)",
+      borderRadius: 18,
+      padding: "32px 26px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "color-mix(in srgb, #fff 60%, transparent)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 12
+    }
+  }, "Join the team"), /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 25,
+      fontWeight: 400,
+      color: "#fff",
+      letterSpacing: "-.5px",
+      lineHeight: 1.15,
+      marginBottom: 12
+    }
+  }, "Become a RISE", /*#__PURE__*/React.createElement("br", null), "Ambassador"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "color-mix(in srgb, #fff 85%, transparent)",
+      lineHeight: 1.8,
+      marginBottom: 22
+    }
+  }, "Lead your own projects, represent RISE in your school, and build real leadership experience - no prior experience needed."), /*#__PURE__*/React.createElement("a", {
+    href: "https://docs.google.com/forms/d/e/1FAIpQLSeDVY26ZW9CBGieE4bACfIBYlK61O6s_0KI6HxdCU0lpIP62Q/viewform?usp=sharing&ouid=117285547351667389810",
+    target: "_blank",
+    rel: "noreferrer",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "10px 16px",
+      background: "var(--surface)",
+      color: "var(--fire)",
+      border: "1px solid var(--ink-6)",
+      borderRadius: 8,
+      fontSize: 13,
+      fontWeight: 700,
+      textDecoration: "none",
+      transition: "opacity .18s"
+    },
+    onMouseEnter: e => e.currentTarget.style.opacity = ".88",
+    onMouseLeave: e => e.currentTarget.style.opacity = "1"
+  }, "Apply now ", /*#__PURE__*/React.createElement(ExternalLink, {
+    size: 12
+  })), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "color-mix(in srgb, #fff 50%, transparent)",
+      marginTop: 10
+    }
+  }, "Takes 2 minutes"))),
+  /* ── For organizations ──────────────────────────────────────────────
+     Sits below the Ambassador block, near the bottom of the page, which is
+     the right trade: an organization scrolling this far is looking for
+     something, while a student has already found what they came for and is
+     not made to scroll past a pitch aimed at adults. Still out of the main
+     navigation for the same reason.
+
+     The copy answers the two questions an organization actually has before
+     they will spend ten minutes registering: what does the badge mean, and
+     why should I want it. */
+  /*#__PURE__*/React.createElement("section", {
+    style: {
+      padding: "0 24px 96px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card org-invite",
+    style: {
+      padding: "40px 36px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "org-invite-head",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 20,
+      marginBottom: 18
+    }
+  },
+  /* The seal is part of the message, not decoration, so it stays on every
+     screen size. It sits beside the heading rather than in its own column,
+     which is what lets it survive the single-column mobile layout. */
+  /*#__PURE__*/React.createElement("div", {
+    className: "org-seal",
+    style: {
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(VerifiedSeal, {
+    size: 72
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".12em",
+      marginBottom: 8
+    }
+  }, "For organizations"), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 31,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.6px",
+      lineHeight: 1.12
+    }
+  }, "Are you an organization?"))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.85,
+      marginBottom: 24,
+      maxWidth: 660
+    }
+  }, "RISE matches students aged 14 to 18 to volunteer roles based on the specific skills they have told us they have. Post your roles here and they reach students who chose that kind of work deliberately, rather than a general audience who found a listing board."),
+  /* Uses the site's own .card-tinted rather than a hand-rolled ember box, so
+     it inherits the same treatment as every other highlighted block. */
+  /*#__PURE__*/React.createElement("div", {
+    className: "card-tinted",
+    style: {
+      padding: "22px 24px",
+      marginBottom: 24,
+      maxWidth: 660
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      fontSize: 14.5,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "What RISE Verified means"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.85,
+      marginBottom: 12
+    }
+  }, "Our students are minors, so every organization is reviewed by a person before any of its postings become visible. We confirm you are a registered entity, that the work is suitable for students aged 14 to 18, and we ask you to state in writing that anyone who would be in contact with a student is screened according to the requirements in your region."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.85
+    }
+  }, "Verified organizations carry the badge on every posting. Students see it, and so do the parents and teachers looking over their shoulder. In practice it is what gives someone the confidence to make first contact.")), /*#__PURE__*/React.createElement("div", {
+    className: "org-stats",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3, 1fr)",
+      gap: 12,
+      marginBottom: 26,
+      maxWidth: 660
+    }
+  }, [["Free", "No listing fees", "We do not charge organizations"], ["60+", "Cities across Canada", "From Vancouver to Halifax"], ["10 min", "To register", "Review takes a little longer"]].map(([n, l, s]) => /*#__PURE__*/React.createElement("div", {
+    key: l,
+    className: "card",
+    style: {
+      padding: "16px 18px",
+      background: "var(--surface-warm)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 28,
+      lineHeight: 1,
+      color: "var(--fire)",
+      letterSpacing: "-1px",
+      display: "block",
+      marginBottom: 7
+    }
+  }, n), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 2
+    }
+  }, l), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      lineHeight: 1.5
+    }
+  }, s)))), /*#__PURE__*/React.createElement("a", {
+    href: "/organizations",
+    className: "btn btn-fire",
+    style: {
+      textDecoration: "none",
+      display: "inline-flex"
+    }
+  }, "Register your organization ", /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 14
+  })), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 13,
+      lineHeight: 1.75,
+      maxWidth: 560
+    }
+  }, "Nothing you post reaches a student until your organization has been reviewed. You can write your postings while you wait."))));
+}
+
+/* The RISE Verified seal. Drawn rather than imported so it inherits the theme
+   tokens and stays crisp at any size. Used on the home page, and available for
+   the org dashboard and result cards later. */
+function VerifiedSeal({
+  size = 72
+}) {
+  return /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    viewBox: "0 0 72 72",
+    fill: "none",
+    role: "img",
+    "aria-label": "RISE Verified"
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+    id: "vsg",
+    x1: "0",
+    y1: "0",
+    x2: "1",
+    y2: "1"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0",
+    stopColor: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "1",
+    stopColor: "var(--fire-light)"
+  }))),
+  /* Notched outer ring, so it reads as a seal rather than a generic badge. */
+  /*#__PURE__*/React.createElement("circle", {
+    cx: "36",
+    cy: "36",
+    r: "34",
+    stroke: "url(#vsg)",
+    strokeWidth: "2",
+    strokeDasharray: "3 3",
+    opacity: ".55"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "36",
+    cy: "36",
+    r: "28",
+    fill: "url(#vsg)"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M36 21c3.6 2.6 7.9 4.1 12 4.3v10.4c0 7.6-5 13.2-12 15.9-7-2.7-12-8.3-12-15.9V25.3c4.1-.2 8.4-1.7 12-4.3z",
+    fill: "#fff",
+    opacity: ".2"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "m30.5 36.5 4 4 8-8.5",
+    stroke: "#fff",
+    strokeWidth: "3.2",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }));
+}
+
+/* ═══════════════════════════════════════
+   MATCHER
+═══════════════════════════════════════ */
+function MatcherPage({
+  isOnline,
+  favs,
+  toggleFav,
+  favId
+}) {
+  const [step, setStep] = useState("name");
+  const [name, setName] = useState("");
+  const [location, setLoc] = useState("");
+  const [talents, setTalents] = useState([]);
+  const [caps, setCaps] = useState([]);
+  const [time, setTime] = useState("");
+  const [vibe, setVibe] = useState("");
+  const [serve, setServe] = useState([]);
+  // VIC dimensions: how they want to show up, and why they're doing this.
+  const [vtype, setVtype] = useState("");
+  const [why, setWhy] = useState([]);
+  // Proficiency per selected capability: { "music-a": "advanced" }
+  const [capLevels, setCapLevels] = useState({});
+  // Languages: { Arabic: "native", French: "conv" }
+  const [langs, setLangs] = useState({});
+  const [langOpen, setLangOpen] = useState(false);
+  const [detail, setDetail] = useState("");
+  const [savedProfile] = useStorage("rise_profile", {
+    interests: []
+  }, true);
+  // Primary talent = first selected, kept for engine calls that expect one category
+  const talent = talents[0] || "";
+  const [results, setResults, resultsLoaded] = useStorage("rise_results", [], true);
+  const [insights, setInsights] = useStorage("rise_insights", {}, true);
+  const [searchMsg, setMsg] = useState("Searching...");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(0);
+  const [loadingMore, setLM] = useState(false);
+  const [moreError, setMoreErr] = useState("");
+  const seenOrgs = useRef(new Set());
+  // Live per-engine status, so the wait shows real work instead of a spinner.
+  const [engineState, setEngineState] = useState({});
+  const [judging, setJudging] = useState(false);
+  const [sortBy, setSortBy] = useState("match");
+  const [minVerdict, setMinVerdict] = useState("all");
+  const [format, setFormat] = useState("any"); // any | remote | onsite
+  const [onlyActionable, setOnlyActionable] = useState(false);
+  const searchRun = useRef(0);
+  const loadMoreTurn = useRef(0);
+  // Persisted so reloading the page doesn't reset everyone to the same opening
+  // search angle.
+  const angleRef = useRef(Number(localStorage.getItem("rise_angle") || 0));
+  const aiHealth = useAIHealth();
+  const [showKey, setShowKey] = useState(false);
+  // Bumped when the startup probe answers, purely to re-render with the
+  // server's real capabilities. (Not named `caps` — that's the student's
+  // selected skills.)
+  const [srvProbe, setSrvProbe] = useState(0);
+  useEffect(() => {
+    /* Ask the server what it can do before the student finishes answering.
+       The ping never reaches a model so it costs nothing, and it means the
+       first search already knows whether live web search exists instead of
+       discovering it by failing. */
+    let alive = true;
+    findProxy().then(() => alive && setSrvProbe(n => n + 1)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Restore: if matches were saved (locally or to their account), show them
+  // again and rebuild the dedupe set so Load More never repeats an org.
+  useEffect(() => {
+    if (resultsLoaded && results.length > 0) {
+      results.forEach(o => {
+        const k = orgKey(o.org);
+        if (k) seenOrgs.current.add(k);
+      });
+      setStep(s => s === "name" ? "results" : s);
+    }
+  }, [resultsLoaded]);
+  const inputRef = useRef(null);
+  const go = s => {
+    setStep(s);
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth"
+    });
+  };
+  const loc = ALL_LOCS.find(l => l.id === location);
+  const tal = TALENTS.find(t => t.id === talent);
+  // All selected talents + their labels
+  const talLabels = talents.map(id => (TALENTS.find(t => t.id === id) || {}).label).filter(Boolean);
+  // All selected capabilities across every chosen talent, as "talentid-capid"
+  const capLabels = caps.map(capId => {
+    const [tid, sid] = capId.split("-");
+    return ((SUPERPOWERS[tid] || []).find(s => s.id === sid) || {}).label;
+  }).filter(Boolean);
+  // Each capability carries its stated level, so the engines can tell a
+  // beginner apart from someone who's competed — the prompts always assumed
+  // they could, and until now there was nothing behind that assumption.
+  const spTxt = caps.map(capId => {
+    const [tid, sid] = capId.split("-");
+    const label = ((SUPERPOWERS[tid] || []).find(s => s.id === sid) || {}).label;
+    if (!label) return "";
+    const lvl = LEVEL_LABEL(capLevels[capId]);
+    return lvl ? `${label} [level: ${lvl}]` : label;
+  }).filter(Boolean).join("; ");
+  const langTxt = Object.keys(langs).filter(l => langs[l]).map(l => `${l} (${(LANG_LEVELS.find(x => x.id === langs[l]) || {}).label || ""})`).join(", ");
+  const prefs = {
+    timeTxt: (typeof TIME_OPTS !== "undefined" ? TIME_OPTS.find(t => t.id === time)?.label : "") || "",
+    vibeTxt: (typeof VIBE_OPTS !== "undefined" ? VIBE_OPTS.find(v => v.id === vibe)?.label : "") || "",
+    serveTxt: (serve || []).filter(id => id !== "any").map(id => (SERVE_OPTS.find(o => o.id === id) || {}).label).filter(Boolean).join(", "),
+    vtypeTxt: (VTYPE_OPTS.find(v => v.id === vtype) || {}).label || "",
+    langTxt,
+    whyTxt: (why || []).map(id => (WHY_OPTS.find(o => o.id === id) || {}).label).filter(Boolean).join("; "),
+    why: why || [],
+    // Where they actually live, which stays Canada even when serving abroad.
+    homeLabel: isGlobalLoc(location) ? "Canada" : (ALL_LOCS.find(l => l.id === location) || {}).label || "Canada",
+    serve: serve || [],
+    caps: caps || [],
+    talents: talents || [],
+    interests: savedProfile && savedProfile.interests || [],
+    talLabels,
+    // Their stated capability in words — the specificity gate checks that a
+    // result's stated reason actually references it.
+    capText: [capLabels.join(" "), detail || ""].join(" ").trim(),
+    detail: detail || "",
+    // Remote is decided by how they want to show up, or by picking the remote
+    // location — never by the setting question, which no longer asks it.
+    virtualOnly: vtype === "homunteer" || location === "virtual",
+    locShort: (ALL_LOCS.find(l => l.id === location) || {}).short || ""
+  };
+  const pSteps = ["name", "location", "talent", "superpower", "prefs"];
+  useEffect(() => {
+    if (step === "name" && inputRef.current) setTimeout(() => inputRef.current?.focus(), 80);
+  }, [step]);
+  const oppKey = o => `${o.org}::${o.title}`;
+  const addBatch = useCallback(arr => {
+    const hostOf = l => {
+      try {
+        return new URL(l).hostname.replace(/^www\./, "");
+      } catch (e) {
+        return "";
+      }
+    };
+    // 1. Validate + dedupe against everything already shown this search.
+    const valid = (arr || []).filter(o => {
+      if (!o || !o.org || !o.title || !/^https:\/\//.test(o.link || "")) return false;
+      const k = orgKey(o.org);
+      const hk = hostOf(o.link);
+      if (!k || seenOrgs.current.has(k) || hk && seenOrgs.current.has("host:" + hk)) return false;
+      seenOrgs.current.add(k);
+      if (hk) seenOrgs.current.add("host:" + hk);
+      return true;
+    });
+    // 2. Deterministic scoring against the full multi-select profile. This is
+    //    the provisional order — good enough to paint immediately, and it is
+    //    what we fall back to if the judge pass never lands.
+    const ranked = rankMatches(valid, prefs, {
+      min: 12
+    }).map(o => Object.assign(o, {
+      _det: o._score,
+      _score: Math.round(Math.min(100, o._score / 112 * 100))
+    }));
+    if (!ranked.length) return [];
+    // 3. Merge into results IN SCORE ORDER so the strongest match is always #1,
+    //    even as later web-search batches arrive.
+    setResults(prev => {
+      const merged = [...prev, ...ranked];
+      merged.sort((a, b) => (b._score || 0) - (a._score || 0));
+      return merged;
+    });
+    for (const opp of ranked) {
+      if (opp.whyMatch) {
+        setInsights(p => ({
+          ...p,
+          [oppKey(opp)]: opp.whyMatch
+        }));
+      } else {
+        /* No paid call here, ever. Web results already carry whyMatch, and the
+           judge pass overwrites it with sharper evidence a moment later — so a
+           per-card API call was buying a blurb that gets thrown away. It was
+           also the single biggest hidden cost in the old design: one request
+           per result, per search. */
+        setInsights(p => ({
+          ...p,
+          [oppKey(opp)]: templateInsight(name, opp, spTxt)
+        }));
+      }
+    }
+    return ranked;
+  }, [name, spTxt, prefs]);
+
+  /* STAGE 3+4 — the judge pass.
+     Runs once the discovery engines have settled, over everything on screen at
+     once so the model calibrates against the real field. Scores are merged back
+     in place by key; a candidate the judge rejects is dropped, and a judge that
+     fails outright leaves the deterministic order untouched. */
+  const runJudge = useCallback(async (run, batch) => {
+    const pool = (batch || []).filter(o => o && o.org);
+    if (pool.length < 2) return;
+    setJudging(true);
+    try {
+      const verdicts = await judgeMatches(pool, loc || {
+        label: location
+      }, tal, spTxt, prefs);
+      if (searchRun.current !== run) return; // a newer search superseded this one
+      const byKey = {};
+      pool.forEach((o, i) => {
+        if (verdicts[i]) byKey[oppKey(o)] = verdicts[i];
+      });
+      if (!Object.keys(byKey).length) return;
+      setResults(prev => {
+        const next = [];
+        for (const o of prev) {
+          const j = byKey[oppKey(o)];
+          if (!j) {
+            next.push(o);
+            continue;
+          }
+          if (j.verdict === "reject") continue; // the judge doesn't believe this one
+          /* A stated wall outranks the score. Dropping these outright would be
+             worse than showing them: the student would just wonder why a
+             search returned so little. They are kept, marked, and sorted
+             below everything they could actually do. */
+          const broke = constraintBreak(o, prefs);
+          const b = blendScore(o._det != null ? o._det : o._score, j);
+          next.push(Object.assign({}, o, {
+            _blocked: broke || null,
+            _score: b.score,
+            _detPct: b.det,
+            _aiScore: b.ai,
+            _judge: j
+          }));
+        }
+        // Anything that breaks a stated constraint sorts below everything the
+        // student can actually do, whatever it scored.
+        next.sort((a, b) => (a._blocked ? 1 : 0) - (b._blocked ? 1 : 0) || (b._score || 0) - (a._score || 0));
+        return next;
+      });
+      // The judge's evidence line is sharper than the generator's own pitch,
+      // so it replaces the insight text where we have one.
+      setInsights(p => {
+        const n = {
+          ...p
+        };
+        for (const k in byKey) if (byKey[k].evidence) n[k] = byKey[k].evidence;
+        return n;
+      });
+    } catch (e) {/* deterministic order stands */} finally {
+      setJudging(false);
+    }
+  }, [loc, tal, spTxt, prefs, location]);
+
+  // Server-side link check. No-ops without the proxy; a link we could not check
+  // is marked unchecked, never verified.
+  const runVerify = useCallback(async (run, batch) => {
+    const urls = (batch || []).map(o => o.link).filter(Boolean);
+    if (!urls.length) return;
+    const map = await verifyLinks(urls);
+    if (searchRun.current !== run || !Object.keys(map).length) return;
+    setResults(prev => prev.map(o => map[o.link] ? Object.assign({}, o, {
+      _linkOk: map[o.link].ok
+    }) : o));
+  }, []);
+  /* One grounded pass, or two recall passes if web search isn't available.
+
+     The old build ran all four of these every time. On a metered account that
+     is four web-search bills for heavily overlapping output — the same three
+     organizations found by four routes — and it made every search slower for
+     no gain. Rigour comes from the judge below, not from asking four times. */
+  /* Two phases, cheapest first.
+
+     Phase A asks the shared, impersonal question and is cached per
+     city+category+angle, so the first student of the day in a cohort pays for
+     the search and everyone after reads it for nothing. Two angles are pulled
+     so the pool is wide from the start; both are cache lookups after the first
+     run.
+
+     Phase B is the old personalised search, and now runs ONLY when phase A
+     could not field enough distinct organizations for this student. That keeps
+     the student's own words in play exactly where they earn their cost —
+     someone with an unusual skill still gets a search tailored to it — while
+     the common case stops paying for one.
+
+     `PHASE_A_FLOOR` is the number of distinct organizations below which the
+     shared pool is judged too thin to rank against. */
+  const PHASE_A_FLOOR = 6;
+  const WEB_ENGINE = {
+    id: "web",
+    label: "Searching live listings",
+    fn: async ex => {
+      const a0 = angleRef.current;
+      const settled = await safeAllSettled([sharedDiscovery(talent, location, {
+        angle: a0,
+        virtualOnly: prefs.virtualOnly,
+        count: 10,
+        maxUses: 4
+      }), sharedDiscovery(talent, location, {
+        angle: (a0 + 1) % 4,
+        virtualOnly: prefs.virtualOnly,
+        count: 8,
+        maxUses: 3
+      })]);
+      const pool = [];
+      for (const r of settled) if (r.status === "fulfilled" && Array.isArray(r.value)) pool.push(...r.value);
+      const distinct = new Set(pool.map(o => orgKey(o.org)).filter(Boolean)).size;
+      if (distinct >= PHASE_A_FLOOR) return pool;
+      // Thin cohort pool — spend on a search shaped by this student's words.
+      try {
+        const personal = await webSearchOpps(talent, location, spTxt, prefs, ex, {
+          count: 5,
+          maxUses: 3,
+          angle: a0
+        });
+        return pool.concat(Array.isArray(personal) ? personal : []);
+      } catch (e) {
+        return pool;
+      }
+    },
+    delay: 0
+  };
+  const RECALL_ENGINES = [{
+    id: "local",
+    label: `Organizations in ${loc?.short || "your area"}`,
+    fn: ex => aiOppsLocal(talent, location, spTxt, prefs, ex),
+    delay: 0
+  }, {
+    id: "national",
+    label: "National programs",
+    fn: ex => aiOppsNational(talent, location, spTxt, prefs, ex),
+    delay: 700
+  }];
+  const EXACT_ENGINE = {
+    id: "exact",
+    label: "Exact-skill search",
+    fn: ex => webSearchExact(talent, location, spTxt, prefs, ex),
+    delay: 0
+  };
+  // Web search only exists behind the proxy. Everywhere else, fall back to
+  // recall so the student still gets matched rather than nothing.
+  /* Live web search only exists where the server holds an Anthropic key. If the
+     startup ping already told us it doesn't, go straight to the recall engines
+     rather than spending a slow round trip proving it. */
+  const canSearch = PROXY_CAPS.known ? PROXY_CAPS.search : PROXY_STATE !== "dead";
+  const ENGINES = canSearch ? [WEB_ENGINE] : RECALL_ENGINES;
+  function runSearch() {
+    const run = ++searchRun.current;
+    // Rotate the opening search angle so pressing search again explores new
+    // ground rather than re-asking the same question.
+    angleRef.current = (angleRef.current + 1) % 4;
+    try {
+      localStorage.setItem("rise_angle", String(angleRef.current));
+    } catch (e) {}
+    setError("");
+    setResults([]);
+    setInsights({});
+    setMoreErr("");
+    setJudging(false);
+    setSortBy("match");
+    setMinVerdict("all");
+    // Filters are about the previous result set. Carrying them into a new
+    // search would silently hide most of what it just found.
+    setFormat("any");
+    setOnlyActionable(false);
+    seenOrgs.current = new Set();
+    go("searching");
+    /* No result prefill.
+
+       This used to replay the last run's saved matches while the engines
+       worked, which made a repeat search look instantaneous — and identical.
+       Combined with the response caches below it, that was the whole reason
+       the same handful of organizations came back every single time. Pressing
+       search now means a search actually happens. */
+    try {
+      Object.keys(localStorage).filter(k => k.startsWith("rise_cache::")).forEach(k => localStorage.removeItem(k));
+    } catch (e) {}
+    const msgs = [`Matching you in ${loc?.short || location}...`, "Scoring real organizations against your skills...", "Searching the web for live openings...", "Weighing each role against what you can do..."];
+    let mi = 0;
+    setMsg(msgs[0]);
+    const iv = setInterval(() => {
+      mi = Math.min(mi + 1, msgs.length - 1);
+      setMsg(msgs[mi]);
+    }, 1400);
+    let shown = false;
+    const reveal = () => {
+      if (!shown) {
+        shown = true;
+        clearInterval(iv);
+        clearTimeout(net);
+        go("results");
+      }
+    };
+
+    // STAGE 0 - INSTANT: score the real curated library across ALL selected
+    // talents and show the strongest matches immediately. This is the reliable
+    // floor: real orgs, real links, ranked by fit. No waiting on the network.
+    const collected = [];
+    /* Remote, or a region outside Canada, means the local library is the wrong
+       shelf entirely — reach for the global one.
+
+       GLOBAL_MODE gates the whole decision. Without it, a Canada-mode student
+       picking "From home" would be handed Wikipedia and Translators without
+       Borders, because virtualOnly alone used to be enough to swing the
+       library. In Canada mode remote means remote for a Canadian organization,
+       so the Canadian shelf is still the right one. */
+    const useGlobal = GLOBAL_MODE && (prefs.virtualOnly || isGlobalLoc(location));
+    const libCandidates = libraryCandidates(prefs.talents, loc?.short || location, {
+      global: useGlobal
+    });
+    setTimeout(() => {
+      collected.push(...addBatch(libCandidates));
+      reveal();
+    }, 250);
+
+    /* RISE Verified postings — Stage 3.
+       Read from the `public_opportunities` view, whose definition already
+       requires published AND a verified organization, so nothing unpublished
+       can arrive here even if this call were wrong. Added ahead of the search
+       engines because these are the highest-confidence results on the page:
+       a person checked the organization behind each one. */
+    (async () => {
+      const rows = await window.riseCloud.publishedOpportunities({
+        city: loc?.short || "",
+        limit: 12
+      });
+      if (searchRun.current !== run || !rows.length) return;
+      const mapped = rows.map(r => ({
+        title: r.title,
+        org: r.org_name,
+        role: r.role_summary || r.description,
+        desc: r.description || r.role_summary,
+        commitment: r.time_commitment,
+        hours: r.time_commitment,
+        requirements: r.requirements,
+        where: r.is_remote ? "Remote" : [r.location_city, r.location_province].filter(Boolean).join(", "),
+        link: r.org_website || "",
+        remote: !!r.is_remote,
+        tags: ["rise-verified"],
+        _riseVerified: true,
+        _origin: "rise",
+        // Starts above the library floor: a human vouched for the
+        // organization, which no library entry can claim.
+        _score: 82,
+        _det: 82
+      }));
+      collected.push(...addBatch(mapped));
+      reveal();
+    })();
+
+    // STAGE 1 - DISCOVER: four engines with different strategies. Each reports
+    // its own state so the waiting screen shows what is actually happening.
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+    // Request budget. The free Gemini tier allows 5 calls a minute, so on that
+    // path we run the two engines that pull in the most distinct results and
+    // save the remaining budget for the judge. With a proxy or an Anthropic
+    // key, all four run.
+    // ENGINES is already the right shape for this transport — one grounded pass
+    // behind the proxy, or the recall pair without it. On the constrained free
+    // key, drop to a single recall pass so one search can't burn the daily cap.
+    const active = isConstrained() ? ENGINES.slice(0, 1) : ENGINES;
+    const init = {};
+    active.forEach(e => init[e.id] = "running");
+    setEngineState(isOnline ? init : {});
+    const engines = isOnline ? active.map(e => delay(e.delay).then(() => e.fn("")).then(arr => {
+      if (searchRun.current !== run) return [];
+      const added = addBatch(arr);
+      collected.push(...added);
+      setEngineState(s => ({
+        ...s,
+        [e.id]: added.length ? "done" : "empty"
+      }));
+      return added;
+    }).catch(() => {
+      setEngineState(s => ({
+        ...s,
+        [e.id]: "failed"
+      }));
+      return [];
+    })) : [];
+    setPending(engines.length);
+    engines.forEach(p => p.finally(() => setPending(n => n - 1)));
+
+    // SAFETY NET: if even the library somehow produced nothing, force reveal.
+    const net = setTimeout(reveal, 3000);
+    if (engines.length) {
+      safeAllSettled(engines).then(() => {
+        if (searchRun.current !== run) return;
+        // All engines done: if they produced nothing at all, fall back instantly
+        if (!shown) {
+          clearTimeout(net);
+          collected.push(...addBatch(builtinOpps(talent, loc?.short || location, seenOrgs.current, 4, {
+            global: useGlobal
+          })));
+          reveal();
+        }
+        // STAGE 3+4 - judge and verify everything that survived
+        runJudge(run, collected);
+        runVerify(run, collected);
+        // Deliberately nothing written back — results are saved by useStorage
+        // for session restore, but never replayed into a new search.
+      });
+    } else {
+      // Offline: still judge is impossible, but rank what the library gave us.
+      setTimeout(reveal, 400);
+    }
+  }
+  async function loadMore() {
+    const run = searchRun.current;
+    setLM(true);
+    setMoreErr("");
+    const added = [];
+    if (isOnline) {
+      const exclude = results.map(r => r.org).slice(-40).join(", ");
+      const delay = ms => new Promise(r => setTimeout(r, ms));
+      // Rotate which pair of engines runs so a second click explores new ground
+      // instead of re-asking the same two questions.
+      // One engine per click, alternating between the broad search and the
+      // student's-own-words search so a second press covers new ground rather
+      // than re-billing for the same question.
+      const pool = canSearch ? [EXACT_ENGINE, WEB_ENGINE] : RECALL_ENGINES;
+      angleRef.current = (angleRef.current + 1) % 4;
+      const e = pool[loadMoreTurn.current++ % pool.length];
+      const engines = [e.fn(exclude)];
+      const settled = await safeAllSettled(engines);
+      for (const r of settled) if (r.status === "fulfilled") added.push(...addBatch(r.value));
+    }
+    // Same GLOBAL_MODE gate as the first pass — "load more" must not be the
+    // back door that lets international orgs into a Canada-mode result list.
+    if (!added.length) added.push(...addBatch(builtinOpps(talent, loc?.short || location, seenOrgs.current, 3, {
+      global: GLOBAL_MODE && (prefs.virtualOnly || isGlobalLoc(location))
+    })));
+    if (!added.length) {
+      setMoreErr("No new organizations this round - try again in a moment, results vary.");
+    } else if (isOnline) {
+      runJudge(run, added);
+      runVerify(run, added);
+    }
+    setLM(false);
+  }
+  /* Derived view of the results list. Sorting and filtering happen here, on
+     data the student already has — no button in this UI costs a network call. */
+  const RANK = {
+    strong: 3,
+    good: 2,
+    weak: 1
+  };
+  const judged = results.some(o => o._judge);
+  /* Is this role doable entirely from home? The model now states it outright;
+     the prose check is only for results cached before that field existed. */
+  const isRemoteRole = o => typeof o.remote === "boolean" ? o.remote : /remote|virtual|online|from home|anywhere/i.test(`${o.where || ""} ${(o.tags || []).join(" ")}`);
+  // Can the student act on this today, without hunting for who to ask?
+  const isActionable = o => !!(o.contactEmail || o.firstStep);
+  const counts = {
+    strong: results.filter(o => verdictOf(o) === "strong").length,
+    good: results.filter(o => RANK[verdictOf(o)] >= 2).length,
+    remote: results.filter(isRemoteRole).length,
+    onsite: results.filter(o => !isRemoteRole(o)).length,
+    actionable: results.filter(isActionable).length
+  };
+  const visible = results.filter(o => minVerdict === "all" || RANK[verdictOf(o)] >= RANK[minVerdict]).filter(o => format === "any" || (format === "remote" ? isRemoteRole(o) : !isRemoteRole(o))).filter(o => !onlyActionable || isActionable(o)).slice().sort((a, b) => {
+    // A role that breaks a stated constraint stays at the bottom under every
+    // sort — sorting by "least time" must not float an impossible role to the
+    // top just because it asks for one hour.
+    const blocked = (a._blocked ? 1 : 0) - (b._blocked ? 1 : 0);
+    if (blocked) return blocked;
+    if (sortBy === "time") return hoursNum(a) - hoursNum(b);
+    if (sortBy === "confidence") return (b._judge?.credibility || 0) - (a._judge?.credibility || 0) || (b._score || 0) - (a._score || 0);
+    return (b._score || 0) - (a._score || 0);
+  });
+  /* Memoised because it is passed to every ResultCard. As a fresh object
+     literal it changed identity on each render of this page, which meant a
+     memoised ResultCard would still re-render the whole result list on any
+     unrelated state change (a toggle, a keystroke, a spinner tick). */
+  const studentCtx = React.useMemo(() => ({
+    name: name,
+    skills: spTxt,
+    langs: langTxt,
+    detail: detail,
+    city: loc?.label || "",
+    time: prefs.timeTxt
+  }), [name, spTxt, langTxt, detail, loc?.label, prefs.timeTxt]);
+  const LabelRow = ({
+    step,
+    total,
+    text
+  }) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".14em",
+      marginBottom: 6
+    }
+  }, "Step ", step, " of ", total), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(20px,3.5vw,28px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.5px",
+      lineHeight: 1.1
+    }
+  }, text));
+  const NavRow = ({
+    onBack,
+    onNext,
+    nextLabel = "Continue",
+    nextDisabled = false,
+    onNextFn
+  }) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: 24
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: onBack,
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement(ChevronLeft, {
+    size: 13
+  }), " Back"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: onNextFn || onNext,
+    disabled: nextDisabled,
+    style: {
+      padding: "10px 20px",
+      fontSize: 13
+    }
+  }, nextLabel, " ", /*#__PURE__*/React.createElement(ChevronRight, {
+    size: 13
+  })));
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    className: "matcher-wrap",
+    style: {
+      maxWidth: 640,
+      margin: "0 auto",
+      padding: "40px 20px 80px"
+    }
+  }, showKey && /*#__PURE__*/React.createElement(AIKeyModal, {
+    onClose: () => setShowKey(false),
+    onSaved: () => {
+      if (step === "results") runSearch();
+    }
+  }), step !== "searching" && step !== "results" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(22px,4vw,32px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.5px",
+      marginBottom: 10
+    }
+  }, "Find your ", /*#__PURE__*/React.createElement("em", {
+    style: {
+      color: "var(--fire)"
+    }
+  }, "perfect match")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 18
+    }
+  }, "5 questions. Real roles, near you or anywhere."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      justifyContent: "center"
+    }
+  }, pSteps.map(s => {
+    const si = pSteps.indexOf(s),
+      ci = pSteps.indexOf(step);
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+      key: s,
+      className: `step-dot ${si < ci ? "done" : si === ci ? "cur" : "pend"}`,
+      style: {
+        width: si === ci ? 22 : 6
+      }
+    });
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "28px 26px"
+    }
+  }, error &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "11px 14px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.18)",
+      borderRadius: 10,
+      display: "flex",
+      gap: 9,
+      alignItems: "center",
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 14,
+    color: "var(--danger)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--danger)"
+    }
+  }, error)), step === "name" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "fu"
+  }, /*#__PURE__*/React.createElement(LabelRow, {
+    step: 1,
+    total: 5,
+    text: "Hey - what's your name?"
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 16
+    }
+  }, "Just for personalisation."), /*#__PURE__*/React.createElement("input", {
+    ref: inputRef,
+    className: "field",
+    type: "text",
+    placeholder: "Your first name…",
+    value: name,
+    onChange: e => setName(e.target.value),
+    onKeyDown: e => e.key === "Enter" && name.trim().length >= 2 && go("location"),
+    style: {
+      marginBottom: 20,
+      fontSize: 16
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: () => go("location"),
+    disabled: name.trim().length < 2,
+    style: {
+      padding: "11px 22px",
+      fontSize: 13
+    }
+  }, "Let's go", name ? `, ${name.split(" ")[0]}` : "", " ", /*#__PURE__*/React.createElement(ArrowRight, {
+    size: 14
+  })))), step === "location" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "fu"
+  }, /*#__PURE__*/React.createElement(LabelRow, {
+    step: 2,
+    total: 5,
+    text: `Where are you, ${name.split(" ")[0]}?`
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 16
+    }
+  }, "We'll find real opportunities in your community."), /*#__PURE__*/React.createElement("select", {
+    className: "field",
+    value: location,
+    onChange: e => setLoc(e.target.value),
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select your city or region…"), LOC_GROUPS.map(g =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("optgroup", {
+    key: g.prov,
+    label: g.prov
+  }, g.locs.map(l =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("option", {
+    key: l.id,
+    value: l.id
+  }, l.label))))), /*#__PURE__*/React.createElement(NavRow, {
+    onBack: () => go("name"),
+    onNext: () => go("talent"),
+    nextDisabled: !location
+  })), step === "talent" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "fu"
+  }, /*#__PURE__*/React.createElement(LabelRow, {
+    step: 3,
+    total: 5,
+    text: "What are your things?"
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 18
+    }
+  }, "Pick every area you'd enjoy. Choosing more than one widens your matches."), /*#__PURE__*/React.createElement("div", {
+    className: "match-tal-grid",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 9,
+      marginBottom: 4
+    }
+  }, TALENTS.map(t => {
+    const sel = talents.includes(t.id);
+    const toggle = () => {
+      setTalents(prev => prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id]);
+      // Drop any selected capabilities that belong to a now-deselected talent
+      setCaps(prev => prev.filter(c => c.split("-")[0] !== t.id || !talents.includes(t.id) ? true : true));
+    };
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+      key: t.id,
+      role: "button",
+      tabIndex: 0,
+      "aria-pressed": sel,
+      onKeyDown: e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      },
+      onClick: toggle,
+      style: {
+        padding: "15px 13px",
+        background: sel ? "var(--ember)" : "var(--surface)",
+        border: `1px solid ${sel ? "var(--fire)" : "var(--ink-5)"}`,
+        borderRadius: 13,
+        cursor: "pointer",
+        transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        userSelect: "none",
+        position: "relative",
+        boxShadow: sel ? "0 0 0 3px rgba(214,86,12,.08)" : "none"
+      }
+    }, /*#__PURE__*/React.createElement(t.Icon, {
+      size: 18,
+      color: sel ? "var(--fire)" : "var(--ink-4)"
+    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 600,
+        color: "var(--ink)",
+        marginBottom: 2
+      }
+    }, t.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: "var(--ink-3)",
+        lineHeight: 1.5
+      }
+    }, t.desc)), sel &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("div", {
+      style: {
+        position: "absolute",
+        top: 9,
+        right: 9,
+        width: 18,
+        height: 18,
+        borderRadius: "50%",
+        background: "var(--fire)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
+      }
+    }, /*#__PURE__*/React.createElement(Check, {
+      size: 11,
+      color: "#fff"
+    })));
+  })), /*#__PURE__*/React.createElement(NavRow, {
+    onBack: () => go("location"),
+    onNext: () => {
+      // prune capabilities whose talent is no longer selected
+      setCaps(prev => prev.filter(c => talents.includes(c.split("-")[0])));
+      go("superpower");
+    },
+    nextDisabled: !talents.length
+  })), step === "superpower" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "fu"
+  }, /*#__PURE__*/React.createElement(LabelRow, {
+    step: 4,
+    total: 5,
+    text: "What can you actually do?"
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 18
+    }
+  }, "Pick every specific skill that fits. These are what we match on, so the more you select, the sharper your matches."), talents.map(tid => {
+    const talent0 = TALENTS.find(t => t.id === tid);
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+      key: tid,
+      style: {
+        marginBottom: 18
+      }
+    }, talents.length > 1 &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: "var(--fire)",
+        textTransform: "uppercase",
+        letterSpacing: ".08em",
+        marginBottom: 9,
+        display: "flex",
+        alignItems: "center",
+        gap: 6
+      }
+    }, talent0 &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(talent0.Icon, {
+      size: 13,
+      color: "var(--fire)"
+    }), talent0?.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 9
+      }
+    }, (SUPERPOWERS[tid] || []).map(s => {
+      const capId = tid + "-" + s.id;
+      const on = caps.includes(capId);
+      return /*#__PURE__*/React.createElement("div", {
+        key: capId
+      }, /*#__PURE__*/React.createElement(ChoiceBtn, {
+        selected: on,
+        onClick: () => setCaps(prev => prev.includes(capId) ? prev.filter(x => x !== capId) : [...prev, capId])
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 13,
+          color: "var(--ink)",
+          lineHeight: 1.7
+        }
+      }, s.label)),
+      // The level question only appears once they've claimed the skill, so the
+      // step stays a simple list until it needs to be more than that.
+      on && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          padding: "9px 2px 4px 14px",
+          alignItems: "center"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: "var(--ink-4)",
+          textTransform: "uppercase",
+          letterSpacing: ".08em"
+        }
+      }, "How good?"), LEVEL_OPTS.map(l => {
+        const sel = capLevels[capId] === l.id;
+        return /*#__PURE__*/React.createElement("button", {
+          key: l.id,
+          type: "button",
+          "aria-pressed": sel,
+          title: l.sub,
+          onClick: () => setCapLevels(p => Object.assign({}, p, {
+            [capId]: sel ? "" : l.id
+          })),
+          style: {
+            padding: "4px 10px",
+            borderRadius: 999,
+            border: "1.5px solid " + (sel ? "var(--fire)" : "var(--ink-5)"),
+            background: sel ? "var(--ember)" : "transparent",
+            color: sel ? "var(--fire)" : "var(--ink-3)",
+            fontSize: 11.5,
+            fontWeight: sel ? 700 : 500,
+            cursor: "pointer",
+            fontFamily: "'DM Sans', sans-serif"
+          }
+        }, l.label);
+      })));
+    })));
+  }),
+  // Languages are a capability in their own right, and one of the sharpest
+  // matching signals there is — a settlement program needs the specific
+  // language, not "a volunteer who is good with people".
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginTop: 6,
+      marginBottom: 18,
+      paddingTop: 16,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 4
+    }
+  }, "Languages you speak"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 10
+    }
+  }, "Optional, but it opens up roles nothing else will — interpreting, settlement support, homework help for newcomers."), Object.keys(langs).filter(l => langs[l]).map(l => /*#__PURE__*/React.createElement("div", {
+    key: l,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      flexWrap: "wrap",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink)",
+      minWidth: 108
+    }
+  }, l), LANG_LEVELS.map(lv => {
+    const sel = langs[l] === lv.id;
+    return /*#__PURE__*/React.createElement("button", {
+      key: lv.id,
+      type: "button",
+      "aria-pressed": sel,
+      onClick: () => setLangs(p => Object.assign({}, p, {
+        [l]: lv.id
+      })),
+      style: {
+        padding: "4px 10px",
+        borderRadius: 999,
+        border: "1.5px solid " + (sel ? "var(--fire)" : "var(--ink-5)"),
+        background: sel ? "var(--ember)" : "transparent",
+        color: sel ? "var(--fire)" : "var(--ink-3)",
+        fontSize: 11.5,
+        fontWeight: sel ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif"
+      }
+    }, lv.label);
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Remove " + l,
+    onClick: () => setLangs(p => {
+      const n = Object.assign({}, p);
+      delete n[l];
+      return n;
+    }),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      color: "var(--ink-4)",
+      padding: 4,
+      display: "inline-flex"
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 12
+  })))), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: "",
+    "aria-label": "Add a language",
+    onChange: e => {
+      if (e.target.value) setLangs(p => Object.assign({}, p, {
+        [e.target.value]: "fluent"
+      }));
+    },
+    style: {
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Add a language…"), LANGUAGES.filter(l => !langs[l]).map(l => /*#__PURE__*/React.createElement("option", {
+    key: l,
+    value: l
+  }, l)))), /*#__PURE__*/React.createElement(NavRow, {
+    onBack: () => go("talent"),
+    onNext: () => go("prefs"),
+    nextDisabled: !caps.length
+  })), step === "prefs" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "fu"
+  }, /*#__PURE__*/React.createElement(LabelRow, {
+    step: 5,
+    total: 5,
+    text: "Last few things."
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 20
+    }
+  }, "The more you tell us here, the sharper your matches."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 9
+    }
+  }, "Availability"), TIME_OPTS.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: t.id,
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(ChoiceBtn, {
+    selected: time === t.id,
+    onClick: () => setTime(t.id)
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 1
+    }
+  }, t.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)"
+    }
+  }, t.sub)))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 9
+    }
+  }, "Preferred setting"), VIBE_OPTS.map(v =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: v.id,
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(ChoiceBtn, {
+    selected: vibe === v.id,
+    onClick: () => setVibe(v.id)
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 1
+    }
+  }, v.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)"
+    }
+  }, v.sub)))))),
+  // VIC: how they want to show up. Born in Canada, reaching the world — this
+  // is the line between a shift down the street and a remote role abroad.
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 9
+    }
+  }, "How do you want to show up?"), VTYPE_OPTS.map(v => /*#__PURE__*/React.createElement("div", {
+    key: v.id,
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(ChoiceBtn, {
+    selected: vtype === v.id,
+    onClick: () => setVtype(vtype === v.id ? "" : v.id)
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 1
+    }
+  }, v.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)"
+    }
+  }, v.sub)))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 4
+    }
+  }, "Who do you want to work with?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 9
+    }
+  }, "Pick any that apply. This sharpens your matches a lot."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 7
+    }
+  }, SERVE_OPTS.map(o => {
+    const on = serve.includes(o.id);
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      onClick: () => setServe(prev => o.id === "any" ? prev.includes("any") ? [] : ["any"] : prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev.filter(x => x !== "any"), o.id]),
+      style: {
+        padding: "7px 13px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-2)",
+        fontSize: 12.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif",
+        transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+      }
+    }, o.label);
+  }))),
+  // VIC: why they're serving. Two students with identical skills and identical
+  // availability still belong in different rooms, and this is the field that
+  // tells them apart.
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 4
+    }
+  }, "Why are you doing this?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 9
+    }
+  }, "Be honest — there's no wrong answer, and it changes which roles we look for."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 7
+    }
+  }, WHY_OPTS.map(o => {
+    const on = why.includes(o.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      title: o.sub,
+      onClick: () => setWhy(prev => prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev, o.id]),
+      style: {
+        padding: "7px 13px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-2)",
+        fontSize: 12.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif",
+        transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+      }
+    }, o.label);
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 22
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    htmlFor: "detail-input",
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 4
+    }
+  }, "Anything specific? (optional)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 9
+    }
+  }, "The more detail, the better the match. e.g. \"I play jazz trumpet and want to work with kids\" or \"I've helped run my mosque's food drive for two years\"."), /*#__PURE__*/React.createElement("input", {
+    id: "detail-input",
+    className: "input",
+    type: "text",
+    maxLength: 160,
+    value: detail,
+    onChange: e => setDetail(e.target.value),
+    placeholder: "Optional, but it makes a real difference"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: () => go("superpower"),
+    style: {
+      padding: "10px 18px",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement(ChevronLeft, {
+    size: 13
+  }), " Back"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: runSearch,
+    disabled: !time || !vibe,
+    style: {
+      padding: "12px 26px",
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement(Search, {
+    size: 14
+  }), " Find My Matches"))), step === "searching" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "56px 20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 56,
+      height: 56,
+      margin: "0 auto 20px",
+      borderRadius: 16,
+      background: "var(--ember)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Search, {
+    size: 24,
+    color: "var(--fire)",
+    className: "spin"
+  })), /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.4px",
+      marginBottom: 8
+    }
+  }, "Finding your matches…"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-3)",
+      marginBottom: 32
+    }
+  }, searchMsg), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 240,
+      margin: "0 auto 16px",
+      height: 3,
+      background: "var(--ink-5)",
+      borderRadius: 100,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "bar-fill",
+    style: {
+      height: "100%",
+      background: "var(--fire)",
+      borderRadius: 100
+    }
+  })),
+  // Show the real work instead of a spinner that means nothing.
+  /*#__PURE__*/
+  React.createElement(EngineProgress, {
+    engines: ENGINES,
+    state: engineState
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginTop: 24
+    }
+  }, "Results appear as soon as they're found")), step === "results" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 22,
+      flexWrap: "wrap",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    className: "badge badge-green",
+    style: {
+      marginBottom: 8,
+      display: "inline-flex"
+    }
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 10
+  }), "\xA0", visible.length, visible.length !== results.length ? ` of ${results.length}` : "", " match", results.length !== 1 ? "es" : "", loc?.short ? " · " + loc.short : "", pending > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    style: {
+      marginLeft: 4,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 3
+    }
+  }, "· ", /*#__PURE__*/React.createElement(Loader, {
+    size: 9,
+    className: "spin"
+  }), " more incoming")), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.4px"
+    }
+  }, name ? `${name.split(" ")[0]}'s matches` : "Your matches"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 3
+    }
+  },
+  // Restored sessions have results but no wizard answers in state, so every
+  // part of this line has to be optional or it renders "undefined · ·".
+  [talLabels.length ? talLabels.join(", ") : tal?.label, loc?.label, isOnline ? "Real roles, ranked for you" : "Suggested matches"].filter(Boolean).join(" · "))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: () => {
+      setResults([]);
+      setInsights({});
+      setError("");
+      setTalents([]);
+      setCaps([]);
+      setServe([]);
+      setDetail("");
+      setVtype("");
+      setWhy([]);
+      setCapLevels({});
+      setLangs({});
+      seenOrgs.current = new Set();
+      go("name");
+    },
+    style: {
+      padding: "8px 14px",
+      fontSize: 12,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 11
+  }), " Retake"),
+  // Re-run the same profile against the live web with a different opening
+  // angle. "Retake" throws the answers away; this keeps them and just looks
+  // again, which is what people actually want when results feel stale.
+  /*#__PURE__*/
+  React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: runSearch,
+    title: "Search the web again for this same profile",
+    style: {
+      padding: "8px 14px",
+      fontSize: 12,
+      flexShrink: 0,
+      marginLeft: 8
+    }
+  }, /*#__PURE__*/React.createElement(Search, {
+    size: 11
+  }), " Search again")), !isOnline &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "10px 14px",
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 10,
+      fontSize: 12,
+      color: "var(--fire)",
+      marginBottom: 18,
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(WifiOff, {
+    size: 13
+  }), " Offline mode - AI knowledge only. Turn Live on for web verification."), isOnline && /*#__PURE__*/React.createElement(AIStatusNotice, {
+    health: aiHealth,
+    onOpenSettings: () => setShowKey(true)
+  }),
+  // While the judge pass runs, say so — the order is about to change and a
+  // silent reshuffle under the student's thumb is disorienting.
+  judging &&
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "10px 14px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10,
+      fontSize: 12,
+      color: "var(--ink-2)",
+      marginBottom: 16
+    },
+    "aria-live": "polite"
+  }, /*#__PURE__*/React.createElement(Loader, {
+    size: 12,
+    className: "spin",
+    color: "var(--fire)"
+  }), "Weighing each role against what you can do — the order will update."), results.length > 2 && /*#__PURE__*/React.createElement(ResultControls, {
+    sortBy: sortBy,
+    setSortBy: setSortBy,
+    minVerdict: minVerdict,
+    setMinVerdict: setMinVerdict,
+    format: format,
+    setFormat: setFormat,
+    onlyActionable: onlyActionable,
+    setOnlyActionable: setOnlyActionable,
+    counts: counts,
+    judged: judged
+  }), visible.length === 0 && results.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "18px 0"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.7,
+      marginBottom: 10
+    }
+  }, "No matches left with these filters — ", results.length, " were hidden."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setMinVerdict("all");
+      setFormat("any");
+      setOnlyActionable(false);
+    },
+    className: "btn btn-ghost",
+    style: {
+      fontSize: 12,
+      padding: "7px 14px"
+    }
+  }, "Clear filters")), visible.length === 0 && results.length === 0 && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      padding: "18px 0",
+      lineHeight: 1.7
+    }
+  }, "Nothing meets that bar yet. Show ", /*#__PURE__*/React.createElement("button", {
+    onClick: () => setMinVerdict("all"),
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 13
+    }
+  }, "all matches"), " or load more below."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 16
+    }
+  }, visible.map((opp, idx) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ResultCard, {
+    key: oppKey(opp),
+    opp: opp,
+    idx: idx,
+    insight: insights[oppKey(opp)],
+    talLabel: tal?.label,
+    isWeb: isOnline,
+    student: studentCtx,
+    isFav: favs.some(f => favId(f) === favId(opp)),
+    // Pass the stable useCallback itself rather than a fresh closure per card;
+    // ResultCard applies its own `opp`. An inline arrow here would change
+    // identity every render and defeat the memo on ResultCard.
+    onFav: toggleFav,
+    studentName: name,
+    studentSkills: spTxt
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 24,
+      textAlign: "center"
+    }
+  }, moreError &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginBottom: 10
+    }
+  }, moreError), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: loadMore,
+    disabled: loadingMore,
+    style: {
+      padding: "12px 32px",
+      fontSize: 14,
+      minWidth: 220
+    }
+  }, loadingMore ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Loader, {
+    size: 15,
+    className: "spin"
+  }), " Finding more…") :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Plus, {
+    size: 15
+  }), " Load More Opportunities")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)",
+      marginTop: 8
+    }
+  }, "Tap again anytime - there's always more to discover.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 28,
+      padding: "18px 20px",
+      background: "var(--surface-warm)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 14,
+      display: "flex",
+      gap: 14,
+      alignItems: "center",
+      flexWrap: "wrap",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 2
+    }
+  }, "Found something? Log your hours."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)"
+    }
+  }, "A record of what you actually did. Graduation hours are a by-product, not the point."))))));
+}
+
+/* Provincial & territorial graduation volunteer requirements.
+   Verified sources: ontario.ca, CBC, CharityVillage. hours:null = no
+   provincewide minimum (student sets a personal goal instead). */
+const PROVINCES = [{
+  id: "on",
+  name: "Ontario",
+  hours: 40,
+  note: "Ontario requires 40 hours of community involvement for the OSSD."
+}, {
+  id: "bc",
+  name: "British Columbia",
+  hours: 30,
+  note: "BC requires 30 hours of community service or paid work experience through its graduation program."
+}, {
+  id: "nl",
+  name: "Newfoundland & Labrador",
+  hours: 30,
+  note: "Newfoundland & Labrador requires 30 volunteer hours to graduate."
+}, {
+  id: "yt",
+  name: "Yukon",
+  hours: 30,
+  note: "Yukon follows BC's graduation program: 30 hours of community service or work experience."
+}, {
+  id: "nt",
+  name: "Northwest Territories",
+  hours: 25,
+  note: "The Northwest Territories requires 25 volunteer hours to graduate."
+}, {
+  id: "nu",
+  name: "Nunavut",
+  hours: null,
+  note: "A required Grade 11 course includes a community practicum. Hours are set by your school, so set your own goal below."
+}, {
+  id: "ab",
+  name: "Alberta",
+  hours: null,
+  note: "No provincewide minimum. Some schools set their own, so choose a personal goal below."
+}, {
+  id: "sk",
+  name: "Saskatchewan",
+  hours: null,
+  note: "No provincewide minimum. Some schools set their own, so choose a personal goal below."
+}, {
+  id: "mb",
+  name: "Manitoba",
+  hours: null,
+  note: "No provincewide minimum, though you can earn an elective credit for community service. Choose a personal goal below."
+}, {
+  id: "qc",
+  name: "Québec",
+  hours: null,
+  note: "No provincewide minimum. Some schools set their own, so choose a personal goal below."
+}, {
+  id: "nb",
+  name: "New Brunswick",
+  hours: null,
+  note: "No general requirement, though an elective course includes 30 community-service hours. Choose a personal goal below."
+}, {
+  id: "ns",
+  name: "Nova Scotia",
+  hours: null,
+  note: "No provincewide minimum, though community-service course credits exist. Choose a personal goal below."
+}, {
+  id: "pe",
+  name: "Prince Edward Island",
+  hours: null,
+  note: "No requirement, and PEI actually pays a bursary ($5/hour for 30-100 hours). Set a goal and earn while you volunteer."
+}];
+
+/* ═══════════════════════════════════════
+   HOURS
+═══════════════════════════════════════ */
+// ── SDG Badge: a crisp SVG medallion, greyed when locked ──
+function SDGBadge({
+  badge,
+  size = 74
+}) {
+  const on = badge.have;
+  const c = on ? badge.color : "var(--ink-5)";
+  const ring = on ? badge.color : "var(--ink-5)";
+  const initials = (badge.name || "").split(" ").map(w => w[0]).slice(0, 2).join("");
+  return /*#__PURE__*/React.createElement("div", {
+    role: "img",
+    "aria-label": `${badge.name} badge, ${on ? "unlocked" : "locked"}`,
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 7,
+      opacity: on ? 1 : 0.55,
+      textAlign: "center",
+      width: size + 24
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    viewBox: "0 0 100 100",
+    style: {
+      filter: on ? "drop-shadow(0 3px 8px rgba(0,0,0,.14))" : "none",
+      transition: "color ..3s, background-color ..3s, border-color ..3s, box-shadow ..3s, transform ..3s, opacity ..3s"
+    }
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+    id: `g-${badge.id}`,
+    x1: "0",
+    y1: "0",
+    x2: "0",
+    y2: "1"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0%",
+    stopColor: on ? badge.color : "#d8cfc4"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "100%",
+    stopColor: on ? shade(badge.color, -18) : "#c4b8aa"
+  }))),
+  // scalloped medallion
+  /*#__PURE__*/
+  React.createElement("circle", {
+    cx: 50,
+    cy: 50,
+    r: 42,
+    fill: `url(#g-${badge.id})`
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: 50,
+    cy: 50,
+    r: 42,
+    fill: "none",
+    stroke: "#fff",
+    strokeWidth: 2,
+    opacity: 0.55
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: 50,
+    cy: 50,
+    r: 33,
+    fill: "none",
+    stroke: "#fff",
+    strokeWidth: 1.5,
+    opacity: 0.4
+  }), on ? /*#__PURE__*/React.createElement("text", {
+    x: 50,
+    y: 58,
+    textAnchor: "middle",
+    fontSize: 22,
+    fontWeight: 800,
+    fill: "#fff",
+    fontFamily: "Georgia, serif"
+  }, initials) : /*#__PURE__*/React.createElement("path", {
+    d: "M42 46v-4a8 8 0 0116 0v4h2a2 2 0 012 2v12a2 2 0 01-2 2H40a2 2 0 01-2-2V48a2 2 0 012-2h2zm4 0h8v-4a4 4 0 00-8 0v4z",
+    fill: "#fff",
+    opacity: 0.85
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      fontWeight: 700,
+      color: on ? "var(--ink)" : "var(--ink-3)",
+      lineHeight: 1.25
+    }
+  }, badge.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      fontWeight: 700,
+      letterSpacing: ".04em",
+      color: on ? badge.color : "var(--ink-4)",
+      textTransform: "uppercase"
+    }
+  }, badge.sdg || (badge.have ? "Earned" : "Locked")));
+}
+
+// tiny colour shader for badge gradients
+function shade(hex, amt) {
+  try {
+    const n = parseInt(hex.replace("#", ""), 16);
+    let r = (n >> 16) + amt,
+      g = (n >> 8 & 255) + amt,
+      b = (n & 255) + amt;
+    r = Math.max(0, Math.min(255, r));
+    g = Math.max(0, Math.min(255, g));
+    b = Math.max(0, Math.min(255, b));
+    return "#" + (r << 16 | g << 8 | b).toString(16).padStart(6, "0");
+  } catch (e) {
+    return hex;
+  }
+}
+
+// ── Confetti: pure-CSS burst on milestone, respects reduced-motion ──
+function Confetti({
+  fire
+}) {
+  const [burst, setBurst] = useState(0);
+  useEffect(() => {
+    if (fire) setBurst(b => b + 1);
+  }, [fire]);
+  if (!burst) return null;
+  const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce) return null;
+  const cols = ["#D6560C", "#F97316", "#3F7E44", "#DDA63A", "#C5192D", "#1A6B3C"];
+  const bits = Array.from({
+    length: 44
+  }, (_, i) => {
+    const left = Math.random() * 100,
+      delay = Math.random() * 0.25;
+    const dur = 1.1 + Math.random() * 0.9,
+      rot = Math.random() * 360;
+    const col = cols[i % cols.length],
+      size = 6 + Math.random() * 7;
+    const drift = (Math.random() * 2 - 1) * 140;
+    return /*#__PURE__*/React.createElement("span", {
+      key: burst + "-" + i,
+      style: {
+        position: "absolute",
+        top: "-16px",
+        left: left + "%",
+        width: size,
+        height: size * 0.62,
+        background: col,
+        borderRadius: 1,
+        transform: `rotate(${rot}deg)`,
+        animation: `confFall ${dur}s cubic-bezier(.4,.2,.6,1) ${delay}s forwards`,
+        "--drift": drift + "px"
+      }
+    });
+  });
+  return /*#__PURE__*/React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      position: "fixed",
+      inset: 0,
+      pointerEvents: "none",
+      overflow: "hidden",
+      zIndex: 9999
+    }
+  }, bits);
+}
+
+// ── Impact Score hero card: the transparent blended score ──
+function ImpactScoreCard({
+  impact,
+  pct,
+  goal,
+  onInfo,
+  showInfo
+}) {
+  const consistencyPct = Math.round((impact.multiplier - 1) * 100);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card pop3d",
+    style: {
+      padding: "22px 24px",
+      marginBottom: 18,
+      background: "linear-gradient(135deg, var(--surface) 0%, var(--surface-warm) 100%)",
+      border: "1px solid var(--ember-bd)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      gap: 16,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 220px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(Sparkles, {
+    size: 15,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".08em",
+      textTransform: "uppercase",
+      color: "var(--fire)"
+    }
+  }, "Impact Score"), /*#__PURE__*/React.createElement("button", {
+    onClick: onInfo,
+    "aria-label": "How the Impact Score works",
+    "aria-expanded": !!showInfo,
+    className: "press",
+    style: {
+      border: "1px solid var(--ink-5)",
+      background: "var(--surface)",
+      borderRadius: "50%",
+      width: 18,
+      height: 18,
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--ink-3)",
+      cursor: "pointer",
+      lineHeight: 1,
+      padding: 0
+    }
+  }, "i")), /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    key: impact.score,
+    style: {
+      fontSize: 52,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-2px",
+      lineHeight: 1,
+      animation: "countUp .5s ease both"
+    }
+  }, impact.score), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-3)",
+      marginTop: 6
+    }
+  }, impact.totalHours + " hours", impact.multiplier > 1 ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--success)",
+      fontWeight: 600
+    }
+  }, "  \u00d7 " + impact.multiplier + " consistency") : null)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 20,
+      flexWrap: "wrap"
+    }
+  }, [{
+    Icon: Flame,
+    v: impact.current,
+    l: "Week streak",
+    c: "#E8681A"
+  }, {
+    Icon: TrendingUp,
+    v: impact.longest,
+    l: "Best streak",
+    c: "var(--fire)"
+  }, {
+    Icon: Award,
+    v: impact.activeWeeks,
+    l: "Active weeks",
+    c: "var(--success)"
+  }].map((s, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement(s.Icon, {
+    size: 16,
+    color: s.c
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 24,
+      color: "var(--ink)",
+      lineHeight: 1.1,
+      marginTop: 3
+    }
+  }, s.v), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: "var(--ink-3)",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: ".04em"
+    }
+  }, s.l))))), showInfo ? /*#__PURE__*/React.createElement("div", {
+    className: "view-fade",
+    style: {
+      marginTop: 16,
+      padding: "13px 15px",
+      background: "var(--surface-up)",
+      borderRadius: 10,
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, /*#__PURE__*/React.createElement("strong", null, "How this is calculated: "), "Your score is your total hours multiplied by a consistency bonus. Right now that bonus adds ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: "var(--success)"
+    }
+  }, "+" + consistencyPct + "%"), " \u2014 built from volunteering across " + impact.activeWeeks + " week" + (impact.activeWeeks === 1 ? "" : "s") + " (+" + Math.round(impact.weekBonus * 100) + "%) and your longest run of " + impact.longest + " consecutive week" + (impact.longest === 1 ? "" : "s") + " (+" + Math.round(impact.streakBonus * 100) + "%). Volunteering regularly beats a one-time burst \u2014 that's the whole point.") : null);
+}
+
+// ── Badges tab: category + milestone medallions ──
+function BadgesTab({
+  badges,
+  impact
+}) {
+  const Section = (title, sub, list) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 30
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 19,
+      fontWeight: 400,
+      color: "var(--ink)",
+      marginBottom: 3
+    }
+  }, title), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-3)",
+      marginBottom: 16
+    }
+  }, sub), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 18
+    }
+  }, list.map(b => /*#__PURE__*/React.createElement("div", {
+    key: b.id,
+    title: b.blurb,
+    className: b.have ? "badge-pop" : "",
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(SDGBadge, {
+    badge: b
+  }), b.kind === "category" && !b.have ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: "var(--ink-4)",
+      marginTop: 2
+    }
+  }, b.earnedHours + " / " + b.hours + " h") : null))));
+  return /*#__PURE__*/React.createElement("div", {
+    className: "view-fade"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "16px 20px",
+      marginBottom: 24,
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      background: "linear-gradient(135deg, var(--ember) 0%, var(--surface-warm) 100%)",
+      border: "1px solid var(--ember-bd)"
+    }
+  }, /*#__PURE__*/React.createElement(Award, {
+    size: 22,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: "var(--ink)"
+    }
+  }, badges.unlocked + " badge" + (badges.unlocked === 1 ? "" : "s") + " unlocked"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)"
+    }
+  }, "Keep logging hours to earn more. Each badge maps to a UN Sustainable Development Goal."))), Section("Cause Badges", "Earned by logging hours toward a specific UN Sustainable Development Goal.", badges.category), Section("Milestone Badges", "Earned by reaching key moments in your volunteering journey.", badges.milestone));
+}
+function HoursPage() {
+  const [studentName, setStudentName] = useStorage("rise_studentname", "", true);
+  const [provId, setProvId] = useStorage("rise_prov", "on", true);
+  const [customGoal, setCustomGoal] = useStorage("rise_goalh", 40, true);
+  const provInfo = PROVINCES.find(p => p.id === provId) || PROVINCES[0];
+  const GOAL = provInfo.hours ?? Math.max(1, Number(customGoal) || 40);
+  const [entries, save, loaded] = useStorage("rise_h5", [], true);
+  const [showForm, setForm] = useState(false);
+  const [f, setF] = useState({
+    project: "",
+    custom: "",
+    date: new Date().toISOString().split("T")[0],
+    hours: "",
+    desc: "",
+    supervisor: "",
+    // Volunteering Activity Card: the who / where / why of what was actually done
+    org: "",
+    where: "",
+    who: [],
+    why: []
+  });
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
+  const [reflection, setRef] = useState("");
+  const [loadingRef, setLRef] = useState(false);
+  const PRESETS = ["Music & Performance Sessions", "Youth Tutoring / STEM Mentoring", "Environmental Conservation", "Food Bank & Community Kitchen", "Athletic Coaching / Sports Mentoring", "Financial Literacy Workshop", "Senior Tech Support", "Community Event Support", "Online / Virtual Volunteering", "Other (specify below)"];
+  const total = entries.reduce((s, e) => s + Number(e.hours), 0);
+  const pct = Math.min(100, total / GOAL * 100);
+  const remain = Math.max(0, GOAL - total);
+  // ── Impact engine (live, offline-safe) ──
+  const impact = impactScore(entries);
+  const badges = computeBadges(entries, GOAL);
+  const [tab, setTab] = useState("dashboard"); // dashboard | ledger | badges
+  const [confetti, setConfetti] = useState(0);
+  const [milestoneMsg, setMilestoneMsg] = useState("");
+  const [showScoreInfo, setScoreInfo] = useState(false);
+  // Fire confetti when the unlocked-badge count crosses a new threshold
+  const prevUnlocked = useRef(null);
+  useEffect(() => {
+    if (!loaded) return;
+    if (prevUnlocked.current == null) {
+      prevUnlocked.current = badges.unlocked;
+      return;
+    }
+    if (badges.unlocked > prevUnlocked.current) {
+      setConfetti(c => c + 1);
+      setMilestoneMsg("New badge unlocked!");
+      setTimeout(() => setMilestoneMsg(""), 3800);
+    }
+    prevUnlocked.current = badges.unlocked;
+  }, [badges.unlocked, loaded]);
+  function submit() {
+    setErr("");
+    const proj = f.project === "Other (specify below)" ? f.custom : f.project;
+    if (!proj) return setErr("Please select or enter a project name.");
+    if (!f.date) return setErr("Please select a date.");
+    const h = Number(f.hours);
+    if (!h || h <= 0 || h > 24) return setErr("Enter valid hours (0.5–24).");
+    if (f.desc.trim().length < 10) return setErr("Describe what you did (min 10 chars).");
+    if (!f.supervisor.includes("@")) return setErr("Enter a valid supervisor email.");
+    save([{
+      id: `h-${Date.now()}`,
+      project: proj,
+      date: f.date,
+      hours: h,
+      desc: f.desc,
+      supervisor: f.supervisor,
+      // ── Volunteering Activity Card fields ──
+      // The mirror of the interest card: not just how long you were there, but
+      // who you served, where, and why. A record of "12 hrs, Music" tells a
+      // reference letter writer nothing; this tells them something.
+      org: (f.org || "").trim(),
+      where: (f.where || "").trim(),
+      who: f.who || [],
+      why: f.why || [],
+      // Self-reported until the named supervisor says otherwise. Nothing in
+      // this app can verify that on its own, and the record says so.
+      status: "unconfirmed",
+      loggedAt: new Date().toISOString()
+    }, ...entries]);
+    setF({
+      project: "",
+      custom: "",
+      date: new Date().toISOString().split("T")[0],
+      hours: "",
+      desc: "",
+      supervisor: "",
+      org: "",
+      where: "",
+      who: [],
+      why: []
+    });
+    setOk("Session logged.");
+    setForm(false);
+    setTimeout(() => setOk(""), 3500);
+  }
+
+  /* Ask the supervisor to confirm the session. We can't verify anything
+     ourselves without a server that owns the mailbox, so this opens a prefilled
+     email from the student and records that they asked — it never marks the
+     entry confirmed on its own. */
+  function requestConfirmation(entry) {
+    const subject = `Volunteer hours confirmation — ${studentName || "student"}, ${fmtDate(entry.date)}`;
+    const body = [`Hi,`, ``, `I volunteered with ${entry.org || "your organization"} on ${fmtDate(entry.date)} for ${entry.hours} ${entry.hours === 1 ? "hour" : "hours"}.`, ``, `What I did: ${entry.desc}`, ``, `Would you be able to reply confirming that's accurate? I'm keeping a record of my volunteer service and a short reply from you is all I need.`, ``, `Thank you,`, studentName || ""].join("\n");
+    window.open(gmailComposeUrl(entry.supervisor, subject, body), "_blank", "noopener");
+    save(entries.map(e => e.id === entry.id ? {
+      ...e,
+      status: e.status === "confirmed" ? "confirmed" : "requested",
+      requestedAt: new Date().toISOString()
+    } : e));
+  }
+
+  // Marking a reply as received is the student's own attestation, and the
+  // exported record labels it that way rather than dressing it up as proof.
+  function markConfirmed(entry) {
+    save(entries.map(e => e.id === entry.id ? {
+      ...e,
+      status: e.status === "confirmed" ? "requested" : "confirmed",
+      confirmedAt: new Date().toISOString()
+    } : e));
+  }
+  async function getRef() {
+    setLRef(true);
+    setRef("");
+    try {
+      const t = await getHoursReflection(total, entries, GOAL);
+      setRef(t);
+    } catch (e) {
+      setRef("Your consistency speaks for itself. Every hour here is evidence of someone who follows through.");
+    }
+    setLRef(false);
+  }
+  function exportPortfolio() {
+    const txt = ["RISE VOLUNTEER PORTFOLIO", "=".repeat(28), `Total: ${total.toFixed(1)} / ${GOAL} hours (${Math.round(pct)}%)`, "", ...entries.map(e => `[${e.date}] ${e.project} - ${e.hours}h\n${e.desc}\nSupervisor: ${e.supervisor}`), `\nExported ${new Date().toLocaleDateString()} · RISE Platform`].join("\n");
+    Object.assign(document.createElement("a"), {
+      href: URL.createObjectURL(new Blob([txt])),
+      download: "RISE_Portfolio.txt"
+    }).click();
+  }
+
+  /* Official PDF via the browser's own print engine. This renders real fonts
+     to vector text (fully selectable + ATS-parseable) with zero libraries,
+     so it can't add the fragility a bundled PDF lib would. A hidden iframe
+     keeps the RISE app untouched while printing only the record. */
+  function exportPDF() {
+    const RISE_LOGO = "data:image/png;base64,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";
+    const goalTxt = provInfo.hours != null ? `${provInfo.name} Requirement` : "Personal Goal";
+    const met = total >= GOAL;
+    const statusLine = `${total.toFixed(1)} / ${GOAL} Hours — ${met ? goalTxt + " Met" : Math.max(0, GOAL - total).toFixed(1) + " Hours Remaining"}`;
+    const now = new Date();
+    const exportDate = now.toLocaleDateString("en-CA", {
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    });
+    const sName = (studentName || "").trim() || "Student Name";
+    const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const rows = entries.slice().sort((a, b) => String(b.date).localeCompare(String(a.date))).map(e => `
+      <tr>
+        <td class="org">${esc(e.org || e.project)}</td>
+        <td>${e.org ? esc(e.project) : "Volunteer service"}${e.supervisor ? `<span class="sup">Supervisor: ${esc(e.supervisor)}</span>` : ""}</td>
+        <td class="date">${esc(e.date)}</td>
+        <td class="hrs">${Number(e.hours).toFixed(1)}</td>
+        <td class="conf">${e.status === "confirmed" ? "Confirmed" : e.status === "requested" ? "Requested" : "\u2014"}</td>
+      </tr>`).join("");
+    const confirmedHours = entries.filter(e => e.status === "confirmed").reduce((n, e) => n + Number(e.hours), 0);
+    const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>Volunteer Service Record — ${esc(sName)}</title>
+<style>
+  * { box-sizing: border-box; }
+  @page { size: letter; margin: 16mm 14mm; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1a1a1a; margin: 0; font-size: 11pt; line-height: 1.5; }
+  .head { display: flex; align-items: center; gap: 14px; border-bottom: 2.5px solid #D6560C; padding-bottom: 14px; margin-bottom: 6px; }
+  .head img { width: 46px; height: 46px; }
+  .head .t { flex: 1; }
+  .brand { font-size: 12pt; font-weight: bold; letter-spacing: .12em; color: #D6560C; text-transform: uppercase; }
+  h1 { font-size: 19pt; margin: 2px 0 0; letter-spacing: -.3px; }
+  .meta { text-align: right; font-size: 9.5pt; color: #555; line-height: 1.5; }
+  .meta strong { color: #1a1a1a; font-size: 11pt; display: block; }
+  .status { background: ${met ? "#f0f7f2" : "#fdf4ee"}; border: 1px solid ${met ? "#bcd9c8" : "#f0cbb0"}; border-radius: 8px; padding: 13px 16px; margin: 18px 0 20px; display: flex; justify-content: space-between; align-items: center; }
+  .status .lbl { font-size: 9pt; text-transform: uppercase; letter-spacing: .1em; color: #666; margin-bottom: 3px; }
+  .status .val { font-size: 14pt; font-weight: bold; color: ${met ? "#1a6b3c" : "#D6560C"}; }
+  .status .pct { font-size: 26pt; font-weight: bold; color: ${met ? "#1a6b3c" : "#D6560C"}; font-family: Georgia, serif; }
+  h2 { font-size: 10pt; text-transform: uppercase; letter-spacing: .12em; color: #D6560C; border-bottom: 1px solid #ddd; padding-bottom: 5px; margin: 0 0 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .06em; color: #888; font-weight: bold; padding: 8px 8px; border-bottom: 1.5px solid #ccc; }
+  .conf { text-align: right; white-space: nowrap; font-size: 9pt; color: #555; }
+  th.hrs, td.hrs { text-align: right; }
+  td { padding: 9px 8px; border-bottom: 1px solid #eee; vertical-align: top; font-size: 10pt; }
+  td.org { font-weight: bold; }
+  td.date { color: #666; white-space: nowrap; font-size: 9.5pt; }
+  td.hrs { font-weight: bold; white-space: nowrap; }
+  .sup { display: block; color: #888; font-size: 8.5pt; font-style: italic; margin-top: 2px; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  .signoff { margin-top: 34px; page-break-inside: avoid; display: flex; justify-content: space-between; gap: 40px; }
+  .sig { flex: 1; }
+  .sig .line { border-bottom: 1px solid #333; height: 34px; }
+  .sig .cap { font-size: 8.5pt; color: #666; margin-top: 5px; }
+  .foot { margin-top: 26px; padding-top: 12px; border-top: 1px solid #eee; font-size: 8pt; color: #999; text-align: center; }
+</style></head><body>
+  <div class="head">
+    <img src="${RISE_LOGO}" alt="RISE"/>
+    <div class="t"><div class="brand">RISE — Turn Talent into Impact</div><h1>Official Volunteer Service Record</h1></div>
+    <div class="meta"><strong>${esc(sName)}</strong>Exported ${esc(exportDate)}<br/>rise4impact.org</div>
+  </div>
+  <div class="status">
+    <div><div class="lbl">Service Status — ${esc(goalTxt)}</div><div class="val">${esc(statusLine)}</div></div>
+    <div class="pct">${Math.round(pct)}%</div>
+  </div>
+  <h2>Activity Ledger</h2>
+  <table>
+    <thead><tr><th>Organization</th><th>Role / Activity</th><th>Date</th><th class="hrs">Hours</th><th class="conf">Confirmed</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="signoff">
+    <div class="sig"><div class="line"></div><div class="cap">Supervisor signature</div></div>
+    <div class="sig"><div class="line"></div><div class="cap">Date</div></div>
+  </div>
+  <div class="foot"><strong>How to read this document.</strong> Every entry in this record is reported by the student. RISE does not contact organizations and does not verify hours. An entry marked <em>Confirmed</em> means the student states the named supervisor replied to confirm it; <em>Requested</em> means they have asked and are waiting. Of ${total.toFixed(1)} total hours, ${confirmedHours.toFixed(1)} are marked confirmed. Anyone relying on this record should contact the supervisors listed.<br/><br/>Generated through RISE (rise4impact.org) on ${esc(exportDate)} at ${esc(now.toLocaleTimeString())}.</div>
+</body></html>`;
+    const frame = document.createElement("iframe");
+    frame.style.position = "fixed";
+    frame.style.right = "0";
+    frame.style.bottom = "0";
+    frame.style.width = "0";
+    frame.style.height = "0";
+    frame.style.border = "0";
+    document.body.appendChild(frame);
+    const fdoc = frame.contentWindow.document;
+    fdoc.open();
+    fdoc.write(doc);
+    fdoc.close();
+    const go = () => {
+      try {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+      } catch (e) {}
+      setTimeout(() => {
+        try {
+          document.body.removeChild(frame);
+        } catch (e) {}
+      }, 1500);
+    };
+    if (fdoc.readyState === "complete") setTimeout(go, 350);else frame.onload = () => setTimeout(go, 350);
+  }
+  if (!loaded) return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: 80,
+      color: "var(--ink-3)"
+    }
+  }, "Loading…");
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    className: "view-fade",
+    style: {
+      maxWidth: 860,
+      margin: "0 auto",
+      padding: "40px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement(Confetti, {
+    fire: confetti
+  }), milestoneMsg &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    role: "status",
+    className: "badge-pop",
+    style: {
+      position: "fixed",
+      top: 74,
+      left: "50%",
+      transform: "translateX(-50%)",
+      zIndex: 9998,
+      background: "var(--fire)",
+      color: "#fff",
+      fontWeight: 700,
+      fontSize: 13.5,
+      padding: "11px 20px",
+      borderRadius: 999,
+      boxShadow: "0 8px 26px rgba(214,86,12,.4)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(Award, {
+    size: 15,
+    color: "#fff"
+  }), " ", milestoneMsg), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 1,
+      background: "var(--ink-5)",
+      marginBottom: 20
+    }
+  }), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(28px,4vw,40px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      marginBottom: 7
+    }
+  }, "Impact ", /*#__PURE__*/React.createElement("em", {
+    style: {
+      color: "var(--fire)"
+    }
+  }, "Dashboard")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Your hours, your consistency, your impact — stored on your device.")), /*#__PURE__*/React.createElement("div", {
+    role: "tablist",
+    "aria-label": "Dashboard sections",
+    style: {
+      display: "flex",
+      gap: 4,
+      marginBottom: 26,
+      background: "var(--surface-warm)",
+      padding: 4,
+      borderRadius: 12,
+      border: "1px solid var(--ink-5)",
+      width: "fit-content",
+      flexWrap: "wrap"
+    }
+  }, [["dashboard", "Dashboard"], ["ledger", "Hour Log"], ["applications", "Applications"], ["badges", `Badges (${badges.unlocked})`]].map(([id, label]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    key: id,
+    role: "tab",
+    "aria-selected": tab === id,
+    className: "press",
+    onClick: () => setTab(id),
+    style: {
+      padding: "8px 16px",
+      borderRadius: 9,
+      border: "none",
+      cursor: "pointer",
+      fontSize: 13,
+      fontWeight: 600,
+      fontFamily: "'DM Sans',sans-serif",
+      background: tab === id ? "var(--fire)" : "transparent",
+      color: tab === id ? "#fff" : "var(--ink-2)",
+      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+    }
+  }, label))), tab === "applications" && /*#__PURE__*/React.createElement(MyApplications, null), tab === "dashboard" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "view-fade"
+  }, /*#__PURE__*/React.createElement(ImpactScoreCard, {
+    impact: impact,
+    pct: pct,
+    goal: GOAL,
+    onInfo: () => setScoreInfo(v => !v),
+    showInfo: showScoreInfo
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "16px 18px",
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 14,
+      alignItems: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 220px"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    htmlFor: "prov-select",
+    style: {
+      display: "block",
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".12em",
+      marginBottom: 7
+    }
+  }, "Your province / territory"), /*#__PURE__*/React.createElement("select", {
+    id: "prov-select",
+    className: "input",
+    value: provId,
+    onChange: e => setProvId(e.target.value),
+    style: {
+      cursor: "pointer"
+    }
+  }, PROVINCES.map(p =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("option", {
+    key: p.id,
+    value: p.id
+  }, p.name, p.hours ? ` - ${p.hours}h required` : "")))), provInfo.hours == null &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      flex: "0 1 150px"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    htmlFor: "goal-input",
+    style: {
+      display: "block",
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".12em",
+      marginBottom: 7
+    }
+  }, "Personal goal (hrs)"), /*#__PURE__*/React.createElement("input", {
+    id: "goal-input",
+    className: "input",
+    type: "number",
+    min: "1",
+    max: "999",
+    value: customGoal,
+    onChange: e => setCustomGoal(e.target.value)
+  }))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      lineHeight: 1.65,
+      marginTop: 10,
+      marginBottom: 0
+    }
+  }, provInfo.note, " Check with your school - boards can set their own rules.")), ok &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "11px 15px",
+      background: "var(--success-bg)",
+      border: "1px solid rgba(26,107,60,.18)",
+      borderRadius: 10,
+      color: "var(--success)",
+      fontSize: 13,
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 14
+  }), ok), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "auto 1fr",
+      gap: 14,
+      marginBottom: 22
+    },
+    className: "hours-top"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card-tinted",
+    style: {
+      padding: "26px 22px",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Ring, {
+    pct: pct,
+    size: 136,
+    stroke: 11
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 26,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1
+    }
+  }, total.toFixed(1)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: "var(--ink-3)",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: ".07em"
+    }
+  }, "/ ", GOAL, " hrs"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      color: "var(--fire)",
+      letterSpacing: "-.4px"
+    }
+  }, Math.round(pct), "%"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "var(--ink-3)",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: ".07em"
+    }
+  }, remain > 0 ? `${remain.toFixed(1)} hrs to go` : "Goal complete!"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: 9
+    },
+    className: "hours-stats"
+  }, [{
+    l: "Logged",
+    v: `${total.toFixed(1)} h`,
+    c: "var(--fire)"
+  }, {
+    l: "Sessions",
+    v: entries.length,
+    c: "var(--fire-mid)"
+  }, {
+    l: "Remaining",
+    v: `${remain.toFixed(1)} h`,
+    c: remain === 0 ? "var(--success)" : "var(--ink-3)"
+  }].map((s, i) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: i,
+    className: "card",
+    style: {
+      padding: "13px 15px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "var(--ink-3)",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: ".08em",
+      marginBottom: 5
+    }
+  }, s.l), /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      color: s.c,
+      letterSpacing: "-.4px"
+    }
+  }, s.v)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      padding: "15px 16px",
+      background: "var(--surface-warm)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 7
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5
+    }
+  }, /*#__PURE__*/React.createElement(Sparkles, {
+    size: 11,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 9,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".12em"
+    }
+  }, "AI Reflection")), entries.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: getRef,
+    disabled: loadingRef,
+    style: {
+      fontSize: 11,
+      color: "var(--fire)",
+      background: "var(--surface)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 7,
+      padding: "3px 10px",
+      cursor: "pointer",
+      fontWeight: 600,
+      fontFamily: "'DM Sans',sans-serif",
+      opacity: loadingRef ? .5 : 1
+    }
+  }, loadingRef ? "…" : reflection ? "Refresh" : "Generate")), reflection ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.75,
+      fontStyle: "italic"
+    }
+  }, reflection) : loadingRef ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 5
+    }
+  }, /*#__PURE__*/React.createElement(Shimmer, {
+    h: 11,
+    w: "90%"
+  }), /*#__PURE__*/React.createElement(Shimmer, {
+    h: 11,
+    w: "60%"
+  })) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)"
+    }
+  }, entries.length === 0 ? "Log your first session to get a personal AI reflection." : "Click Generate for a reflection on your service journey."))))), tab === "ledger" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "view-fade"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginBottom: 22,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire press",
+    onClick: () => setForm(!showForm),
+    style: {
+      padding: "10px 20px",
+      fontSize: 13
+    }
+  }, showForm ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(X, {
+    size: 13
+  }) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Plus, {
+    size: 13
+  }), " ", showForm ? "Cancel" : "Log New Session"), entries.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    className: "btn btn-ghost",
+    onClick: exportPortfolio,
+    style: {
+      padding: "10px 20px",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement(Download, {
+    size: 13
+  }), " Export Text"), entries.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: exportPDF,
+    style: {
+      padding: "10px 20px",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement(Download, {
+    size: 13
+  }), " Export Official Portfolio (PDF)")), entries.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    htmlFor: "pdf-name",
+    style: {
+      display: "block",
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 6
+    }
+  }, "Your full name (appears on the official PDF)"), /*#__PURE__*/React.createElement("input", {
+    id: "pdf-name",
+    className: "input",
+    type: "text",
+    placeholder: "e.g. Neil Mekouar",
+    value: studentName,
+    onChange: e => setStudentName(e.target.value),
+    style: {
+      maxWidth: 320
+    }
+  })), showForm &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "22px",
+      marginBottom: 22
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      fontSize: 15,
+      fontWeight: 600,
+      color: "var(--ink)",
+      marginBottom: 18,
+      letterSpacing: "-.3px"
+    }
+  }, "Log a volunteer session"), err &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: "9px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.18)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12,
+      display: "flex",
+      gap: 7,
+      alignItems: "center",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement(AlertCircle, {
+    size: 12
+  }), err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 13
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Project / Organization"), /*#__PURE__*/React.createElement("select", {
+    className: "field",
+    value: f.project,
+    onChange: e => setF(p => ({
+      ...p,
+      project: e.target.value
+    }))
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select a category…"), PRESETS.map(p =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("option", {
+    key: p,
+    value: p
+  }, p))), f.project === "Other (specify below)" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("input", {
+    className: "field",
+    type: "text",
+    placeholder: "Project or org name…",
+    value: f.custom,
+    onChange: e => setF(p => ({
+      ...p,
+      custom: e.target.value
+    })),
+    style: {
+      marginTop: 7
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 11
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Date"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "date",
+    value: f.date,
+    onChange: e => setF(p => ({
+      ...p,
+      date: e.target.value
+    }))
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Hours"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "number",
+    min: ".5",
+    max: "24",
+    step: ".5",
+    placeholder: "e.g. 3.5",
+    value: f.hours,
+    onChange: e => setF(p => ({
+      ...p,
+      hours: e.target.value
+    }))
+  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "What did you do?"), /*#__PURE__*/React.createElement("textarea", {
+    className: "field",
+    rows: 3,
+    placeholder: "Describe your specific activities and contributions…",
+    value: f.desc,
+    onChange: e => setF(p => ({
+      ...p,
+      desc: e.target.value
+    }))
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Supervisor Email"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "email",
+    placeholder: "supervisor@organization.ca",
+    value: f.supervisor,
+    onChange: e => setF(p => ({
+      ...p,
+      supervisor: e.target.value
+    }))
+  })),
+  /* ── Volunteering Activity Card ──
+     The counterpart to the interest card. "12 hrs, Music" is a number; a
+     reference-letter writer or an admissions officer can do nothing with it.
+     Who you served, where, and why turns the same session into something a
+     person can actually read back to you. All optional — a student mid-way
+     through logging a shift should never be blocked by a form. */
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      paddingTop: 14,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 3
+    }
+  }, "Activity card (optional)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginBottom: 12,
+      lineHeight: 1.6
+    }
+  }, "Takes fifteen seconds and makes this record worth showing someone."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Organization"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "text",
+    placeholder: "e.g. Baycrest",
+    value: f.org,
+    onChange: e => setF(p => ({
+      ...p,
+      org: e.target.value
+    }))
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 5
+    }
+  }, "Where"), /*#__PURE__*/React.createElement("input", {
+    className: "field",
+    type: "text",
+    placeholder: "City, or Remote",
+    value: f.where,
+    onChange: e => setF(p => ({
+      ...p,
+      where: e.target.value
+    }))
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 7
+    }
+  }, "Who you served"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, SERVE_OPTS.filter(o => o.id !== "any").map(o => {
+    const on = (f.who || []).includes(o.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      onClick: () => setF(p => ({
+        ...p,
+        who: on ? (p.who || []).filter(x => x !== o.id) : [...(p.who || []), o.id]
+      })),
+      style: {
+        padding: "5px 11px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-3)",
+        fontSize: 11.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif"
+      }
+    }, o.label);
+  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 7
+    }
+  }, "Why it mattered"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, WHY_OPTS.map(o => {
+    const on = (f.why || []).includes(o.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: o.id,
+      type: "button",
+      "aria-pressed": on,
+      title: o.sub,
+      onClick: () => setF(p => ({
+        ...p,
+        why: on ? (p.why || []).filter(x => x !== o.id) : [...(p.why || []), o.id]
+      })),
+      style: {
+        padding: "5px 11px",
+        borderRadius: 999,
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "transparent",
+        color: on ? "var(--fire)" : "var(--ink-3)",
+        fontSize: 11.5,
+        fontWeight: on ? 700 : 500,
+        cursor: "pointer",
+        fontFamily: "'DM Sans', sans-serif"
+      }
+    }, o.label);
+  })))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: submit,
+    style: {
+      padding: "11px 20px",
+      fontSize: 13,
+      width: "fit-content"
+    }
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 14
+  }), " Log This Session"))), entries.length === 0 ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "card-ghost",
+    style: {
+      textAlign: "center",
+      padding: "60px 20px"
+    }
+  }, /*#__PURE__*/React.createElement(Clock, {
+    size: 36,
+    color: "var(--ink-5)",
+    style: {
+      marginBottom: 14
+    }
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-3)",
+      marginBottom: 4
+    }
+  }, "No sessions logged yet."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-4)"
+    }
+  }, "After your first shift, log it here and start building your record.")) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".09em",
+      marginBottom: 2
+    }
+  }, entries.length, " sessions · ", total.toFixed(1), " hours total"), entries.map(e =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: e.id,
+    style: {
+      background: "var(--surface)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 14,
+      padding: "15px 16px",
+      display: "flex",
+      gap: 13,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 10,
+      padding: "7px 10px",
+      textAlign: "center",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "serif",
+    style: {
+      fontSize: 18,
+      color: "var(--fire)",
+      letterSpacing: "-.4px",
+      lineHeight: 1
+    }
+  }, Number(e.hours).toFixed(1)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: "var(--ink-3)",
+      fontWeight: 600,
+      textTransform: "uppercase"
+    }
+  }, "hrs")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 8,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "var(--ink)"
+    }
+  }, e.project, e.org ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 500,
+      color: "var(--ink-3)"
+    }
+  }, " \xB7 ", e.org) : null), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      display: "flex",
+      gap: 10,
+      marginTop: 2,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 3
+    }
+  }, /*#__PURE__*/React.createElement(Calendar, {
+    size: 9
+  }), " ", new Date(e.date + "T00:00").toLocaleDateString("en-CA", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  })), e.where ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 3
+    }
+  }, /*#__PURE__*/React.createElement(MapPin, {
+    size: 9
+  }), " ", e.where) : null,
+  // The badge used to read "Pending" on every entry forever, regardless of
+  // whether anyone had ever been asked to confirm it.
+  /*#__PURE__*/
+  React.createElement("span", {
+    className: "badge " + (e.status === "confirmed" ? "badge-green" : "badge-neutral"),
+    style: {
+      fontSize: 9,
+      padding: "1px 7px"
+    },
+    title: e.status === "confirmed" ? "You marked this as confirmed by your supervisor" : e.status === "requested" ? "You've asked your supervisor to confirm it" : "Not yet sent for confirmation"
+  }, e.status === "confirmed" ? "Confirmed" : e.status === "requested" ? "Awaiting reply" : "Not confirmed"))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => save(entries.filter(x => x.id !== e.id)),
+    style: {
+      background: "none",
+      border: "none",
+      color: "var(--ink-4)",
+      cursor: "pointer",
+      padding: 3,
+      borderRadius: 6,
+      transition: "color .15s"
+    },
+    onMouseEnter: ev => ev.target.style.color = "var(--danger)",
+    onMouseLeave: ev => ev.target.style.color = "var(--ink-4)"
+  }, /*#__PURE__*/React.createElement(Trash2, {
+    size: 13
+  }))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      lineHeight: 1.65,
+      marginBottom: 2
+    }
+  }, e.desc), (e.who || []).length || (e.why || []).length ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 5,
+      margin: "7px 0 8px"
+    }
+  }, (e.who || []).map(id => /*#__PURE__*/React.createElement("span", {
+    key: "w" + id,
+    className: "badge badge-neutral",
+    style: {
+      fontSize: 9.5,
+      padding: "1px 7px"
+    },
+    title: "Who you served"
+  }, (SERVE_OPTS.find(o => o.id === id) || {}).label || id)), (e.why || []).map(id => /*#__PURE__*/React.createElement("span", {
+    key: "y" + id,
+    className: "badge badge-fire",
+    style: {
+      fontSize: 9.5,
+      padding: "1px 7px"
+    },
+    title: "Why it mattered"
+  }, (WHY_OPTS.find(o => o.id === id) || {}).label || id))) : null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "var(--ink-4)"
+    }
+  }, "Supervisor: ", e.supervisor),
+  // Nothing in this app can verify a session on its own, so the student asks
+  // and the record tracks that they asked. It never flips itself.
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => requestConfirmation(e),
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: "var(--fire)"
+    }
+  }, e.status === "unconfirmed" || !e.status ? "Ask them to confirm" : "Ask again"), e.status && e.status !== "unconfirmed" ? /*#__PURE__*/React.createElement("button", {
+    onClick: () => markConfirmed(e),
+    style: {
+      background: "none",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: e.status === "confirmed" ? "var(--ink-4)" : "var(--success)"
+    }
+  }, e.status === "confirmed" ? "Undo" : "They replied \u2014 mark confirmed") : null)))))), tab === "badges" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(BadgesTab, {
+    badges: badges,
+    impact: impact
+  }));
+}
+
+/* ═══════════════════════════════════════
+   SETTINGS
+═══════════════════════════════════════ */
+function SettingRow({
+  label,
+  sub,
+  control
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    className: "setting-row"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 500,
+      color: "var(--ink)",
+      marginBottom: 2
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)"
+    }
+  }, sub)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flexShrink: 0
+    }
+  }, control));
+}
+function SettingsPage({
+  settings,
+  updateSetting,
+  isOnline,
+  setOnline
+}) {
+  const [showKey, setShowKey] = useState(false);
+  const [aiKeySet, setAiKeySet] = useState(() => {
+    try {
+      return !!localStorage.getItem("rise_gemini_key");
+    } catch (e) {
+      return false;
+    }
+  });
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 520,
+      margin: "0 auto",
+      padding: "40px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 32
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 1,
+      background: "var(--ink-5)",
+      marginBottom: 20
+    }
+  }), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(22px,4vw,32px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.5px",
+      marginBottom: 7
+    }
+  }, "Settings"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Customise how RISE looks and feels. Everything saves locally.")), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "20px 22px",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".14em",
+      marginBottom: 16
+    }
+  }, "Connection"), /*#__PURE__*/React.createElement(SettingRow, {
+    label: isOnline ? "Live search is on" : "Offline mode is on",
+    sub: isOnline ? "Matches are found and verified live from the web for your exact city." : "Matches come from built-in knowledge - useful on slow or limited connections.",
+    control:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(Toggle, {
+      label: "Use the site offline",
+      on: !isOnline,
+      onChange: () => setOnline(o => !o)
+    })
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-3)",
+      lineHeight: 1.65,
+      marginTop: 12,
+      paddingTop: 12,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, "You can use RISE offline anytime. Offline mode still finds volunteer matches using our built-in list of real organizations - it just skips live web search, which makes it lighter and works better on weak connections. Your hours log and settings always work offline."),
+  // Previously the only way to reach this was to run a search and have it fail,
+  // which is the worst possible moment to discover a setting exists.
+  /*#__PURE__*/
+  React.createElement(SettingRow, {
+    label: "Your own AI key",
+    sub: aiKeySet ? "Live matching is using your personal key." : "RISE ships with a shared free key that usually runs out. A free key of your own takes a minute.",
+    control: /*#__PURE__*/React.createElement("button", {
+      className: aiKeySet ? "btn btn-ghost" : "btn btn-fire",
+      onClick: () => setShowKey(true),
+      style: {
+        padding: "8px 14px",
+        fontSize: 12,
+        whiteSpace: "nowrap"
+      }
+    }, aiKeySet ? "Change" : "Add key")
+  })), showKey && /*#__PURE__*/React.createElement(AIKeyModal, {
+    onClose: () => setShowKey(false),
+    onSaved: () => setAiKeySet(!!localStorage.getItem("rise_gemini_key"))
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "20px 22px",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".14em",
+      marginBottom: 16
+    }
+  }, "Appearance"), /*#__PURE__*/React.createElement(SettingRow, {
+    label: "Dark mode",
+    sub: "Switches to a warm dark colour scheme",
+    control:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(Toggle, {
+      label: "Dark mode",
+      on: settings.darkMode,
+      onChange: () => updateSetting("darkMode", !settings.darkMode)
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "20px 22px",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".14em",
+      marginBottom: 16
+    }
+  }, "Accessibility"), /*#__PURE__*/React.createElement(SettingRow, {
+    label: "Text size",
+    sub: "Adjust reading comfort",
+    control:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 4
+      }
+    }, [["sm", "12px", "Small"], ["md", "15px", "Medium"], ["lg", "18px", "Large"], ["xl", "21px", "Extra large"]].map(([v, sz, lbl]) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("button", {
+      key: v,
+      "aria-pressed": settings.fontSize === v,
+      "aria-label": `Text size ${lbl}`,
+      onClick: () => updateSetting("fontSize", v),
+      style: {
+        width: 36,
+        height: 34,
+        borderRadius: 8,
+        border: `2px solid ${settings.fontSize === v ? "var(--fire)" : "var(--ink-5)"}`,
+        background: settings.fontSize === v ? "var(--ember)" : "var(--surface)",
+        color: settings.fontSize === v ? "var(--fire)" : "var(--ink-3)",
+        fontSize: sz,
+        fontWeight: 700,
+        cursor: "pointer",
+        fontFamily: "'DM Sans',sans-serif",
+        transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s",
+        lineHeight: 1
+      }
+    }, "A")))
+  }), /*#__PURE__*/React.createElement(SettingRow, {
+    label: "Reduce motion",
+    sub: "Disables all animations and transitions",
+    control:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(Toggle, {
+      label: "Reduce motion",
+      on: settings.reducedMotion,
+      onChange: () => updateSetting("reducedMotion", !settings.reducedMotion)
+    })
+  }), /*#__PURE__*/React.createElement(SettingRow, {
+    label: "High contrast",
+    sub: "Increases colour contrast for readability",
+    control:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(Toggle, {
+      label: "High contrast",
+      on: settings.highContrast,
+      onChange: () => updateSetting("highContrast", !settings.highContrast)
+    })
+  }), /*#__PURE__*/React.createElement(SettingRow, {
+    label: "Easier reading",
+    sub: "Adds breathing room between letters, words, and lines",
+    control: /*#__PURE__*/React.createElement(Toggle, {
+      label: "Easier reading",
+      on: settings.easyReading,
+      onChange: () => updateSetting("easyReading", !settings.easyReading)
+    })
+  }), /*#__PURE__*/React.createElement(SettingRow, {
+    label: "Underline all links",
+    sub: "Makes every link visibly underlined",
+    control: /*#__PURE__*/React.createElement(Toggle, {
+      label: "Underline all links",
+      on: settings.underlineLinks,
+      onChange: () => updateSetting("underlineLinks", !settings.underlineLinks)
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "20px 22px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".14em",
+      marginBottom: 14
+    }
+  }, "About RISE"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.8,
+      marginBottom: 14
+    }
+  }, "RISE is a youth-led platform built by Neil & Rayan Mekouar that empowers young people to turn their talents, passions, and skills into meaningful community impact. 60+ cities. Free forever."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 7,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge badge-fire"
+  }, "v3.0"), /*#__PURE__*/React.createElement("span", {
+    className: "badge badge-neutral"
+  }, "Canada 2026"))));
+}
+
+/* ═══════════════════════════════════════
+   FOOTER
+═══════════════════════════════════════ */
+function ContactSection() {
+  const [sent, setSent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const onSubmit = async e => {
+    e.preventDefault();
+    setSending(true);
+    setError("");
+    const form = e.target;
+    const data = new FormData(form);
+    try {
+      const res = await fetch("https://formsubmit.co/ajax/rise4impact.together@gmail.com", {
+        method: "POST",
+        headers: {
+          "Accept": "application/json"
+        },
+        body: data
+      });
+      if (!res.ok) throw new Error("Failed to send");
+      setSent(true);
+      form.reset();
+    } catch (err) {
+      setError("Couldn't send your message. Please email us directly.");
+    } finally {
+      setSending(false);
+    }
+  };
+  const inputStyle = {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid var(--ink-5)",
+    background: "var(--surface)",
+    color: "var(--ink)",
+    fontSize: 14,
+    fontFamily: "inherit",
+    boxSizing: "border-box"
+  };
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("section", {
+    id: "contact",
+    style: {
+      borderTop: "1px solid var(--ink-5)",
+      padding: "48px 24px",
+      background: "var(--canvas)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 640,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 28,
+      margin: "0 0 8px",
+      color: "var(--ink)"
+    }
+  }, "Contact us"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-3)",
+      margin: "0 0 20px"
+    }
+  }, "Questions, feedback, or ideas? Send us a message."), sent ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      padding: 16,
+      borderRadius: 8,
+      background: "var(--ink-6, #f0f0f0)",
+      color: "var(--ink)",
+      fontSize: 14
+    }
+  }, "Thanks - your message has been sent. We'll be in touch soon.") :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("form", {
+    onSubmit: onSubmit
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "hidden",
+    name: "_subject",
+    value: "New RISE contact form message"
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "hidden",
+    name: "_captcha",
+    value: "false"
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "hidden",
+    name: "_template",
+    value: "table"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 12,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "First name"), /*#__PURE__*/React.createElement("input", {
+    name: "First Name",
+    required: true,
+    maxLength: 60,
+    style: inputStyle
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "Last name"), /*#__PURE__*/React.createElement("input", {
+    name: "Last Name",
+    required: true,
+    maxLength: 60,
+    style: inputStyle
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "Message"), /*#__PURE__*/React.createElement("textarea", {
+    name: "Message",
+    required: true,
+    rows: 5,
+    maxLength: 2000,
+    style: {
+      ...inputStyle,
+      resize: "vertical",
+      minHeight: 120
+    }
+  })), error &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      color: "#c0392b",
+      fontSize: 13,
+      marginBottom: 10
+    }
+  }, error), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: sending,
+    style: {
+      padding: "10px 20px",
+      background: "var(--fire)",
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      fontSize: 14,
+      fontWeight: 600,
+      cursor: sending ? "wait" : "pointer",
+      opacity: sending ? 0.7 : 1
+    }
+  }, sending ? "Sending…" : "Submit")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginTop: 20,
+      textAlign: "center"
+    }
+  }, "Or contact our support team directly at ", /*#__PURE__*/React.createElement("a", {
+    href: "mailto:rise4impact.together@gmail.com",
+    style: {
+      color: "var(--fire)",
+      textDecoration: "none",
+      fontWeight: 600
+    }
+  }, "rise4impact.together@gmail.com"))));
+}
+function Footer({
+  setPage,
+  favCount
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("footer", {
+    style: {
+      borderTop: "1px solid var(--ink-5)",
+      padding: "24px",
+      background: "var(--surface)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 1200,
+      margin: "0 auto",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      cursor: "pointer"
+    },
+    onClick: () => setPage("home")
+  }, /*#__PURE__*/React.createElement("img", {
+    src: "data:image/png;base64,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",
+    alt: "RISE logo",
+    style: {
+      width: 24,
+      height: 24,
+      objectFit: "contain",
+      display: "block"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)"
+    }
+  }, "RISE · Turn Talent into Impact")), /*#__PURE__*/React.createElement("div", {
+    /* Wraps. This row grew a sixth item when "For organizations" was added,
+       which pushed it past the width of a 375px phone and gave the whole page
+       a horizontal scroll. */
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      rowGap: 10,
+      columnGap: 20
+    }
+  }, [["home", "Home"], ["match", "Find Matches"], ["hours", "Log Hours"], ...(favCount > 0 ? [["favorites", "Favorites"]] : []), ["about", "About"], ["settings", "Settings"]].map(([id, lbl]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    key: id,
+    onClick: () => setPage(id),
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      cursor: "pointer",
+      fontWeight: 500,
+      transition: "color .15s"
+    },
+    onMouseEnter: e => e.target.style.color = "var(--fire)",
+    onMouseLeave: e => e.target.style.color = "var(--ink-3)"
+  }, lbl)),
+  /* The only organization-facing entry point in the volunteer app, and the
+     only volunteer-visible change in Stage 1. Deliberately here and not in
+     the main navigation: the primary nav belongs to the 14-year-old using
+     this, and nothing an organization needs should compete for that space.
+     A real link rather than a click handler so it can be opened in a new
+     tab, shared, and read by a screen reader as a destination. */
+  /*#__PURE__*/React.createElement("a", {
+    href: "?org",
+    style: {
+      fontSize: 12,
+      color: "var(--ink-4)",
+      cursor: "pointer",
+      fontWeight: 500,
+      textDecoration: "none",
+      transition: "color .15s"
+    },
+    onMouseEnter: e => e.target.style.color = "var(--fire)",
+    onMouseLeave: e => e.target.style.color = "var(--ink-4)"
+  }, "For organizations")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "var(--ink-4)"
+    }
+  }, "Neil & Rayan Mekouar · Canada 2026")));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   APPLYING — Stage 4, Level 1
+
+   One shared application form for every RISE Verified opportunity.
+
+   What it collects is deliberately narrow: availability, what they have done
+   before, why this one, and a yes/no on whether they need an adjustment.
+   What it does not collect is the point — no surname, school, address,
+   neighbourhood, phone, date of birth or photo, and no free-text box for
+   accessibility. A teen who needs something raises it with a person at the
+   Level 3 meeting rather than typing a medical detail into a record an adult
+   they have never met can read.
+
+   Free text here runs teen to organization only. Nothing in this stage, or
+   any later one, gives an organization a prose channel back.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const AVAILABILITY_OPTS = [["weekday_after_school", "Weekdays after school"], ["weekday_daytime", "Weekdays during the day"], ["weekends", "Weekends"], ["evenings", "Evenings"], ["flexible", "Flexible"]];
+
+/* A gentle nudge, not a gate.
+   Teenagers overshare by default, and the honest fix is to notice and say so
+   at the moment it happens rather than to reject the form or quietly store
+   it. Deliberately warns and lets them submit anyway: this is their
+   application, and a false positive that blocks it would be worse than a
+   sentence of advice they choose to ignore. */
+function oversharingHints(text) {
+  const t = String(text || "");
+  const hints = [];
+  if (/\b\d{3}[\s.-]?\d{3}[\s.-]?\d{4}\b/.test(t)) hints.push("a phone number");
+  if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(t)) hints.push("an email address");
+  if (/\b[A-Za-z]\d[A-Za-z][\s-]?\d[A-Za-z]\d\b/.test(t)) hints.push("a postal code");
+  if (/\b\d{1,5}\s+\w+\s+(street|st|avenue|ave|road|rd|drive|dr|crescent|cres|boulevard|blvd|way|lane)\b/i.test(t)) hints.push("a street address");
+  if (/\b(secondary school|high school|collegiate|C\.?I\.?)\b/i.test(t)) hints.push("your school");
+  return hints;
+}
+
+function ApplyModal({
+  opp,
+  profile,
+  onClose,
+  onDone
+}) {
+  const [availability, setAvailability] = useState("flexible");
+  const [experience, setExperience] = useState("");
+  const [motivation, setMotivation] = useState("");
+  const [prior, setPrior] = useState("");
+  const [accessibility, setAccessibility] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  // Capabilities the student already chose in the matcher. Carried across so
+  // they are not asked the same question twice, and snapshotted onto the
+  // application so nothing org-facing needs to read their profile.
+  const skills = (profile && profile.skills ? String(profile.skills).split(/;|\n/) : []).map(s => s.trim()).filter(Boolean).slice(0, 6);
+
+  const hints = [...new Set([...oversharingHints(experience), ...oversharingHints(motivation), ...oversharingHints(prior)])];
+
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const submit = async e => {
+    e.preventDefault();
+    if (busy) return;
+    setErr("");
+    setBusy(true);
+    try {
+      await window.riseCloud.submitApplication({
+        opportunityId: opp.id,
+        availability,
+        experience,
+        motivation,
+        prior,
+        accessibility,
+        skills
+      });
+      setDone(true);
+      onDone && onDone();
+    } catch (e2) {
+      setErr(e2.message || "Couldn't send that. Try again.");
+    }
+    setBusy(false);
+  };
+
+  const field = (label, value, setter, placeholder, hint) => /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, label), hint && /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      marginBottom: 6,
+      lineHeight: 1.55
+    }
+  }, hint), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 3,
+    value: value,
+    placeholder: placeholder,
+    onChange: e => setter(e.target.value),
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit"
+    }
+  }));
+
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(22,17,10,.5)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 18,
+      backdropFilter: "blur(3px)",
+      overflowY: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    className: "card",
+    style: {
+      width: "100%",
+      maxWidth: 540,
+      padding: "26px 24px",
+      background: "var(--surface)",
+      maxHeight: "92vh",
+      overflowY: "auto"
+    }
+  }, done ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 24,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "Application sent"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.8,
+      marginBottom: 16
+    }
+  }, opp.org, " will see your application. You can check where it is up to, or withdraw it, from My Hours at any time."), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    onClick: onClose
+  }, "Done")) : /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    noValidate: true
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 6
+    }
+  }, "Apply through RISE"), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      color: "var(--ink)",
+      marginBottom: 4,
+      lineHeight: 1.2
+    }
+  }, opp.title), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--fire)",
+      fontWeight: 600,
+      marginBottom: 16
+    }
+  }, opp.org),
+  /* Says up front what will and will not be shared. A teen deciding whether
+     to apply deserves to know what an adult on the other side will see. */
+  /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "11px 13px",
+      background: "var(--surface-warm)",
+      border: "1px solid var(--ink-6)",
+      borderRadius: 10,
+      marginBottom: 18,
+      fontSize: 12,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, "They see your first name and last initial, your answers below, and the skills you picked. They do not see your full name, your school, where you live, your email, or your age."), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14
+    }
+  }, err), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "When are you free?"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: availability,
+    onChange: e => setAvailability(e.target.value)
+  }, AVAILABILITY_OPTS.map(([v, l]) => /*#__PURE__*/React.createElement("option", {
+    key: v,
+    value: v
+  }, l)))), field("What have you done that is relevant?", experience, setExperience, "Clubs, lessons, jobs, anything you have actually done.", "No need to name your school."), field("Why this one?", motivation, setMotivation, "What made you pick this role?"), field("Have you volunteered before?", prior, setPrior, "Where, and what did you do? Leave blank if this is your first time."), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "flex-start",
+      marginBottom: 6,
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: accessibility,
+    onChange: e => setAccessibility(e.target.checked),
+    style: {
+      width: 17,
+      height: 17,
+      marginTop: 2,
+      accentColor: "var(--fire)"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, "I would need an adjustment to take part")),
+  /* The reason there is no text box here, said to the person it protects. */
+  /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      lineHeight: 1.6,
+      marginBottom: 18,
+      paddingLeft: 27
+    }
+  }, "Ticking this only tells them a conversation is needed. You decide what to say, to a person, when you meet them. Nothing about your health is stored here."), !!skills.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12.5,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "Skills you already told us about"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, skills.map((s, i) => /*#__PURE__*/React.createElement("span", {
+    key: i,
+    className: "badge badge-neutral",
+    style: {
+      fontSize: 11
+    }
+  }, s.length > 46 ? s.slice(0, 46) + "…" : s)))), !!hints.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "11px 13px",
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 10,
+      marginBottom: 16,
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, "It looks like you included ", hints.join(", "), ". You do not need to, and it is safer not to. You can still send it if you meant to."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn btn-fire",
+    disabled: busy,
+    style: {
+      flex: 1,
+      justifyContent: "center"
+    }
+  }, busy ? "Sending…" : "Send application"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn btn-ghost",
+    onClick: onClose
+  }, "Cancel")))));
+}
+
+/* Where a teen sees their own applications and can pull one back.
+   Withdrawing is always available and needs no reason, because the whole
+   ladder is meant to be teen-controlled: the organization asks, the student
+   decides, and changing their mind is a decision like any other. */
+const APP_STATUS_COPY = {
+  submitted: ["Sent", "They have it. Nothing needed from you yet.", "var(--fire)"],
+  under_review: ["Being read", "Someone at the organization is looking at it.", "var(--fire)"],
+  info_requested: ["They asked something", "There are a few questions waiting for you.", "var(--fire)"],
+  meeting_proposed: ["They suggested a meeting", "You choose whether to go.", "var(--fire)"],
+  accepted: ["Accepted", "They would like you to join.", "var(--success)"],
+  declined: ["Not this time", "They went another way. It is not a reflection on you.", "var(--ink-4)"],
+  withdrawn: ["Withdrawn", "You pulled this one back.", "var(--ink-4)"]
+};
+
+function MyApplications() {
+  const user = useAuth();
+  const [rows, setRows] = useState(null);
+  const [busyId, setBusyId] = useState("");
+
+  const load = useCallback(async () => {
+    setRows(await window.riseCloud.myApplications());
+  }, []);
+  useEffect(() => {
+    if (user) load();else setRows([]);
+  }, [user, load]);
+
+  const withdraw = async id => {
+    setBusyId(id);
+    try {
+      await window.riseCloud.withdrawApplication(id);
+      await load();
+    } catch (e) {}
+    setBusyId("");
+  };
+
+  if (!user) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "card",
+      style: {
+        padding: "22px 24px"
+      }
+    }, /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 14,
+        color: "var(--ink-2)",
+        lineHeight: 1.8
+      }
+    }, "Sign in to see your applications. Applying needs an account so you can follow what happens next and pull an application back if you change your mind."));
+  }
+
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.75,
+      marginBottom: 16
+    }
+  }, "Applications you have sent through RISE. Only you can see these."), rows === null && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Loading…"), rows && !rows.length && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "22px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.8
+    }
+  }, "Nothing yet. RISE Verified roles in your matches have an ", /*#__PURE__*/React.createElement("strong", null, "Apply through RISE"), " button.")), rows && rows.map(a => {
+    const [label, sub, colour] = APP_STATUS_COPY[a.status] || APP_STATUS_COPY.submitted;
+    const open = a.status !== "withdrawn" && a.status !== "declined";
+    return /*#__PURE__*/React.createElement("div", {
+      key: a.id,
+      className: "card",
+      style: {
+        padding: "16px 18px",
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 700,
+        color: colour,
+        marginBottom: 3
+      }
+    }, label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: "var(--ink-2)",
+        lineHeight: 1.7,
+        marginBottom: 8
+      }
+    }, sub), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--ink-4)"
+      }
+    }, "Sent ", new Date(a.created_at).toLocaleDateString()), open && /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-ghost",
+      disabled: busyId === a.id,
+      style: {
+        marginTop: 11,
+        fontSize: 12,
+        padding: "6px 12px"
+      },
+      onClick: () => withdraw(a.id)
+    }, busyId === a.id ? "Withdrawing…" : "Withdraw"));
+  }));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ORGANIZATIONS — Stage 1
+
+   Everything organization-facing lives in this block. It is deliberately
+   self-contained and reached only by an explicit route, so the volunteer
+   app renders exactly as it did before: no shared component was modified to
+   add it, and no organization code runs for a volunteer session.
+
+   Stage 1 is signup, auth and a dashboard shell. Organizations cannot post
+   anything yet, nothing they enter is visible to a volunteer, and there is
+   no contact path of any kind between an organization and a student.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const ORG_TYPES = ["Registered charity", "Non-profit", "School or school board", "Hospital or health authority", "Library", "Municipality or public agency", "Community group", "Other"];
+
+function OrgField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+  required,
+  hint,
+  autoComplete
+}) {
+  return /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, label, required && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--fire)"
+    },
+    "aria-hidden": "true"
+  }, " *")), /*#__PURE__*/React.createElement("input", {
+    className: "input",
+    type: type,
+    value: value,
+    required: !!required,
+    placeholder: placeholder || "",
+    autoComplete: autoComplete,
+    onChange: e => onChange(e.target.value)
+  }), hint && /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      color: "var(--ink-3)",
+      marginTop: 4,
+      lineHeight: 1.5
+    }
+  }, hint));
+}
+
+/* ── Registration ────────────────────────────────────────────────────── */
+function OrgSignupPage({
+  go
+}) {
+  const [f, setF] = useState({
+    name: "",
+    orgType: ORG_TYPES[0],
+    registrationNumber: "",
+    websiteUrl: "",
+    address1: "",
+    address2: "",
+    city: "",
+    province: "",
+    postalCode: "",
+    contactName: "",
+    contactPosition: "",
+    contactEmail: "",
+    contactPhone: "",
+    email: "",
+    password: ""
+  });
+  const set = k => v => setF(p => ({
+    ...p,
+    [k]: v
+  }));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  const canSubmit = f.name.trim() && f.contactName.trim() && f.contactEmail.trim() && f.email.trim() && f.password.length >= 6 && !busy;
+
+  const submit = async e => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setErr("");
+    setBusy(true);
+    try {
+      const res = await window.riseCloud.signUpOrganization(f);
+      if (res && res.needsConfirmation) {
+        try {
+          sessionStorage.setItem("rise_pending_org", JSON.stringify(f));
+        } catch (e2) {}
+      }
+      setDone(true);
+    } catch (e2) {
+      setErr(e2.message || "Something went wrong — try again.");
+    }
+    setBusy(false);
+  };
+
+  if (done) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "page-wrap",
+      style: {
+        maxWidth: 620,
+        margin: "0 auto",
+        padding: "48px 20px 80px"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "card"
+    }, /*#__PURE__*/React.createElement("h1", {
+      className: "serif",
+      style: {
+        fontSize: 26,
+        color: "var(--ink)",
+        marginBottom: 10
+      }
+    }, "Registration received"), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 14,
+        color: "var(--ink-2)",
+        lineHeight: 1.7,
+        marginBottom: 14
+      }
+    }, "Your organization has been created and is ", /*#__PURE__*/React.createElement("strong", null, "awaiting verification"), ". A person at RISE reviews every organization before anything it posts can reach a student. Nothing you enter is visible to students until that review is done."), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 13,
+        color: "var(--ink-3)",
+        lineHeight: 1.7
+      }
+    }, "If your project asks for email confirmation, check your inbox first, then sign in."), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-fire",
+      style: {
+        marginTop: 18
+      },
+      onClick: () => go("home")
+    }, "Back to RISE")));
+  }
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "page-wrap",
+    style: {
+      maxWidth: 620,
+      margin: "0 auto",
+      padding: "48px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".12em",
+      textTransform: "uppercase",
+      color: "var(--ink-3)",
+      marginBottom: 8
+    }
+  }, "For organizations"), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: 32,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "Register your organization"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      marginBottom: 8
+    }
+  }, "RISE connects Canadian students aged 14 to 18 with real volunteer roles. Because those students are minors, every organization is reviewed by a person before it can post anything."),
+  /* Said plainly and up front. An organization should know from the first
+     screen that verification is a human decision, not a form submission. */
+  /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9,
+      alignItems: "flex-start",
+      padding: "12px 14px",
+      background: "var(--ember)",
+      border: "1px solid var(--ember-bd)",
+      borderRadius: 10,
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 14,
+    color: "var(--fire)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, "Registering does not make you verified. We check your registration number, your website, and your contact details before approving anything.")), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 16
+    }
+  }, err), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    noValidate: true
+  }, /*#__PURE__*/React.createElement(OrgSection, {
+    title: "The organization"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Organization name",
+    value: f.name,
+    onChange: set("name"),
+    required: true,
+    autoComplete: "organization"
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Type"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: f.orgType,
+    onChange: e => set("orgType")(e.target.value)
+  }, ORG_TYPES.map(t => /*#__PURE__*/React.createElement("option", {
+    key: t,
+    value: t
+  }, t)))), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Charity or registration number",
+    value: f.registrationNumber,
+    onChange: set("registrationNumber"),
+    placeholder: "e.g. 123456789RR0001",
+    hint: "CRA business number for registered charities. We check this during review."
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Website",
+    value: f.websiteUrl,
+    onChange: set("websiteUrl"),
+    type: "url",
+    placeholder: "https://",
+    hint: "Used to confirm the organization is real and currently operating.",
+    autoComplete: "url"
+  }), /*#__PURE__*/React.createElement(OrgSection, {
+    title: "Registered address"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Street address",
+    value: f.address1,
+    onChange: set("address1"),
+    autoComplete: "address-line1"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Suite or unit",
+    value: f.address2,
+    onChange: set("address2"),
+    autoComplete: "address-line2"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "City",
+    value: f.city,
+    onChange: set("city"),
+    autoComplete: "address-level2"
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Province or territory"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: f.province,
+    onChange: e => set("province")(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select…"), PROVINCES.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.name
+  }, p.name)))), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Postal code",
+    value: f.postalCode,
+    onChange: set("postalCode"),
+    autoComplete: "postal-code"
+  }), /*#__PURE__*/React.createElement(OrgSection, {
+    title: "Contact person"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Full name",
+    value: f.contactName,
+    onChange: set("contactName"),
+    required: true,
+    autoComplete: "name"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Position",
+    value: f.contactPosition,
+    onChange: set("contactPosition"),
+    placeholder: "e.g. Volunteer Coordinator"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Work email",
+    value: f.contactEmail,
+    onChange: set("contactEmail"),
+    type: "email",
+    required: true,
+    hint: "An address at your organization's own domain helps verification.",
+    autoComplete: "email"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Phone",
+    value: f.contactPhone,
+    onChange: set("contactPhone"),
+    type: "tel",
+    autoComplete: "tel"
+  }), /*#__PURE__*/React.createElement(OrgSection, {
+    title: "Sign-in details"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Login email",
+    value: f.email,
+    onChange: set("email"),
+    type: "email",
+    required: true,
+    autoComplete: "email"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Password",
+    value: f.password,
+    onChange: set("password"),
+    type: "password",
+    required: true,
+    hint: "At least 6 characters.",
+    autoComplete: "new-password"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn btn-fire",
+    disabled: !canSubmit,
+    style: {
+      width: "100%",
+      justifyContent: "center",
+      marginTop: 8,
+      opacity: canSubmit ? 1 : .55
+    }
+  }, busy ? "Creating your account…" : "Register organization"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      textAlign: "center",
+      marginTop: 14
+    }
+  }, "Already registered? ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--fire)",
+      fontWeight: 600,
+      cursor: "pointer"
+    },
+    onClick: () => go("home")
+  }, "Sign in from the main site"))));
+}
+
+function OrgSection({
+  title
+}) {
+  return /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".1em",
+      textTransform: "uppercase",
+      color: "var(--ink-4)",
+      margin: "26px 0 12px",
+      paddingTop: 14,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, title);
+}
+
+/* ── Opportunity editor ──────────────────────────────────────────────── */
+const OPP_STATUS_COPY = {
+  draft: ["Draft", "Only you can see this.", "var(--ink-3)"],
+  submitted: ["Submitted for review", "Waiting on RISE. Not visible to students.", "var(--fire)"],
+  published: ["Published", "Visible to students as RISE Verified.", "var(--success)"],
+  closed: ["Closed", "No longer accepting applicants.", "var(--ink-4)"]
+};
+
+function OpportunityEditor({
+  initial,
+  onSaved,
+  onCancel
+}) {
+  const [f, setF] = useState(() => ({
+    id: initial?.id || null,
+    title: initial?.title || "",
+    roleSummary: initial?.role_summary || "",
+    description: initial?.description || "",
+    requirements: initial?.requirements || "",
+    isRemote: !!initial?.is_remote,
+    city: initial?.location_city || "",
+    province: initial?.location_province || "",
+    timeCommitment: initial?.time_commitment || "",
+    minAge: initial?.min_age || "",
+    startsOn: initial?.starts_on || "",
+    closesOn: initial?.closes_on || ""
+  }));
+  const set = k => v => setF(p => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const save = async e => {
+    e.preventDefault();
+    if (!f.title.trim() || busy) return;
+    setErr("");
+    setBusy(true);
+    try {
+      const saved = await window.riseCloud.saveOpportunity(f);
+      onSaved(saved);
+    } catch (e2) {
+      setErr(e2.message || "Couldn't save.");
+    }
+    setBusy(false);
+  };
+
+  return /*#__PURE__*/React.createElement("form", {
+    onSubmit: save,
+    className: "card",
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      color: "var(--ink)",
+      marginBottom: 14
+    }
+  }, f.id ? "Edit posting" : "New posting"), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14
+    }
+  }, err), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Role title",
+    value: f.title,
+    onChange: set("title"),
+    required: true,
+    placeholder: "e.g. Homework Club Volunteer",
+    hint: "Name the position, not the category."
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "What they'd actually do",
+    value: f.roleSummary,
+    onChange: set("roleSummary"),
+    placeholder: "In one session, they would…",
+    hint: "One concrete sentence. This is what a student reads first."
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Full description"), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 5,
+    value: f.description,
+    onChange: e => set("description")(e.target.value),
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit"
+    }
+  })), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Requirements",
+    value: f.requirements,
+    onChange: set("requirements"),
+    placeholder: "e.g. police check, training session",
+    hint: "Real barriers only. Leave blank if there are none."
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      marginBottom: 14,
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: f.isRemote,
+    onChange: e => set("isRemote")(e.target.checked),
+    style: {
+      width: 17,
+      height: 17,
+      accentColor: "var(--fire)"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)"
+    }
+  }, "Can be done entirely from home")), !f.isRemote && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(OrgField, {
+    label: "City",
+    value: f.city,
+    onChange: set("city")
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Province"), /*#__PURE__*/React.createElement("select", {
+    className: "input",
+    value: f.province,
+    onChange: e => set("province")(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select…"), PROVINCES.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.name
+  }, p.name))))), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Time commitment",
+    value: f.timeCommitment,
+    onChange: set("timeCommitment"),
+    placeholder: "e.g. 2 hrs/week, Saturdays"
+  }), /*#__PURE__*/React.createElement(OrgField, {
+    label: "Minimum age",
+    value: f.minAge,
+    onChange: set("minAge"),
+    type: "number",
+    hint: "RISE students are 14 to 18."
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "btn btn-fire",
+    disabled: !f.title.trim() || busy
+  }, busy ? "Saving…" : "Save draft"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn btn-ghost",
+    onClick: onCancel
+  }, "Cancel")));
+}
+
+/* ── Screening attestation ───────────────────────────────────────────────
+   Point (d) of the bar, and the one item on it the organization supplies
+   themselves. Deliberately a written statement they actively make rather than
+   a checkbox buried in signup: it is the sentence you would hold up if
+   someone later asked what the organization told you. */
+function OrgAttestation({
+  org,
+  onDone
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  if (org.screening_attested) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "card",
+      style: {
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 9,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement(CheckCircle, {
+      size: 15,
+      color: "var(--success)"
+    }), /*#__PURE__*/React.createElement("h2", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: "var(--ink)"
+      }
+    }, "Screening attested")), org.screening_statement && /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 12.5,
+        color: "var(--ink-3)",
+        lineHeight: 1.7,
+        marginTop: 8,
+        fontStyle: "italic"
+      }
+    }, "“", org.screening_statement, "”"));
+  }
+
+  const submit = async () => {
+    if (!text.trim()) return;
+    setErr("");
+    setBusy(true);
+    try {
+      await window.riseCloud.attestScreening(text);
+      onDone();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy(false);
+  };
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 16,
+      borderColor: "var(--ember-bd)"
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 6
+    }
+  }, "Required: screening attestation"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      marginBottom: 10
+    }
+  }, "RISE students are 14 to 18. Before your organization can be verified, confirm in writing that anyone who would be in contact with a minor through your programme is screened according to the requirements that apply where you operate."), !open && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => setOpen(true)
+  }, "Make attestation"), open && /*#__PURE__*/React.createElement(React.Fragment, null, err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "9px 12px",
+      background: "var(--danger-bg)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 10
+    }
+  }, err), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 4,
+    value: text,
+    onChange: e => setText(e.target.value),
+    placeholder: "e.g. All volunteers and staff who work with youth complete a Vulnerable Sector Check before any contact, renewed every three years.",
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit",
+      marginBottom: 10
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    disabled: !text.trim() || busy,
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: submit
+  }, busy ? "Recording…" : "I attest to this"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => setOpen(false)
+  }, "Cancel"))));
+}
+
+/* ── Posting list ────────────────────────────────────────────────────── */
+function OrgOpportunities({
+  org
+}) {
+  const [opps, setOpps] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [editing, setEditing] = useState(null); // null | {} | row
+  const [err, setErr] = useState("");
+
+  const reload = useCallback(async () => {
+    const rows = await window.riseCloud.listOpportunities();
+    setOpps(rows);
+    setLoaded(true);
+  }, []);
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const act = async (fn, id) => {
+    setErr("");
+    try {
+      await fn(id);
+      await reload();
+    } catch (e) {
+      setErr(e.message || "That didn't work.");
+    }
+  };
+
+  if (editing) {
+    return /*#__PURE__*/React.createElement(OpportunityEditor, {
+      initial: editing.id ? editing : null,
+      onCancel: () => setEditing(null),
+      onSaved: async () => {
+        setEditing(null);
+        await reload();
+      }
+    });
+  }
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 6,
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink)"
+    }
+  }, "Volunteer opportunities"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    style: {
+      padding: "7px 14px",
+      fontSize: 12.5
+    },
+    onClick: () => setEditing({})
+  }, "New posting")),
+  /* Said on the page an organization actually uses, not only at signup.
+     Drafting is allowed before verification on purpose — an organization can
+     have everything ready the moment review clears — but the ceiling is
+     stated plainly so nobody believes writing a posting published it. */
+  /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-3)",
+      lineHeight: 1.65,
+      marginBottom: 14
+    }
+  }, org && org.verification_status === "verified" ? "Submitted postings are reviewed by RISE before they reach students." : "You can write postings now. Nothing reaches a student until your organization is verified and RISE publishes it."), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "9px 12px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 12
+    }
+  }, err), !loaded && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Loading…"), loaded && !opps.length && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      lineHeight: 1.7
+    }
+  }, "No postings yet."), opps.map(o => {
+    const [label, sub, colour] = OPP_STATUS_COPY[o.status] || OPP_STATUS_COPY.draft;
+    return /*#__PURE__*/React.createElement("div", {
+      key: o.id,
+      style: {
+        padding: "13px 0",
+        borderTop: "1px solid var(--ink-6)"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 12,
+        alignItems: "flex-start"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14.5,
+        fontWeight: 600,
+        color: "var(--ink)"
+      }
+    }, o.title), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: colour,
+        fontWeight: 600,
+        marginTop: 3
+      }
+    }, label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--ink-3)",
+        marginTop: 2
+      }
+    }, sub))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        marginTop: 10,
+        flexWrap: "wrap"
+      }
+    }, o.status === "draft" && /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-ghost",
+      style: {
+        padding: "6px 12px",
+        fontSize: 12
+      },
+      onClick: () => setEditing(o)
+    }, "Edit"), o.status === "draft" && /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-fire",
+      style: {
+        padding: "6px 12px",
+        fontSize: 12
+      },
+      onClick: () => act(window.riseCloud.submitOpportunity.bind(window.riseCloud), o.id)
+    }, "Submit for review"), o.status === "submitted" && /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-ghost",
+      style: {
+        padding: "6px 12px",
+        fontSize: 12
+      },
+      onClick: () => act(window.riseCloud.withdrawOpportunity.bind(window.riseCloud), o.id)
+    }, "Withdraw to draft"), o.status === "draft" && /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-ghost",
+      style: {
+        padding: "6px 12px",
+        fontSize: 12,
+        color: "var(--danger)"
+      },
+      onClick: () => act(window.riseCloud.deleteOpportunity.bind(window.riseCloud), o.id)
+    }, "Delete")));
+  }));
+}
+
+/* ── Dashboard shell ─────────────────────────────────────────────────── */
+function OrgDashboard() {
+  const user = useAuth();
+  const [org, setOrg] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let o = await window.riseCloud.myOrganization();
+      // Recovers the confirmation-required signup path: the auth user was
+      // created before a session existed, so the organization row could not be
+      // inserted then. First sign-in finishes the job.
+      if (!o) {
+        try {
+          const pending = sessionStorage.getItem("rise_pending_org");
+          if (pending) {
+            o = await window.riseCloud.ensureOrganization(JSON.parse(pending));
+            sessionStorage.removeItem("rise_pending_org");
+          }
+        } catch (e) {}
+      }
+      if (!cancelled) {
+        setOrg(o);
+        setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user && user.uid]);
+
+  const status = (org && org.verification_status) || "unverified";
+  const statusCopy = {
+    unverified: ["Awaiting review", "A person at RISE will check your registration number, website and contact details. Nothing you post can reach a student until that is done."],
+    in_review: ["In review", "We are checking your details now. You'll hear from us at your contact email."],
+    verified: ["RISE Verified", "Your organization has been verified. You can post volunteer opportunities."],
+    suspended: ["Suspended", "Your organization is currently suspended. Contact RISE for details."]
+  }[status] || ["Awaiting review", ""];
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "page-wrap",
+    style: {
+      maxWidth: 720,
+      margin: "0 auto",
+      padding: "48px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".12em",
+      textTransform: "uppercase",
+      color: "var(--ink-3)",
+      marginBottom: 8
+    }
+  }, "Organization dashboard"), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: 30,
+      color: "var(--ink)",
+      marginBottom: 20
+    }
+  }, org ? org.name : "Your organization"), !loaded && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "Loading…"), loaded && !org && /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "var(--ink-2)",
+      lineHeight: 1.7
+    }
+  }, "We couldn't find an organization on this account yet. If you just confirmed your email, sign out and back in once.")), loaded && org && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 15,
+    color: status === "verified" ? "var(--success)" : "var(--fire)"
+  }), /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: "var(--ink)"
+    }
+  }, statusCopy[0])), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.7
+    }
+  }, statusCopy[1])), /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink)",
+      marginBottom: 10
+    }
+  }, "Your details"), [["Type", org.org_type], ["Registration number", org.registration_number], ["Website", org.website_url], ["Contact", org.contact_name], ["Contact email", org.contact_email], ["Phone", org.contact_phone]].filter(([, v]) => v).map(([k, v]) => /*#__PURE__*/React.createElement("div", {
+    key: k,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 16,
+      padding: "7px 0",
+      borderBottom: "1px solid var(--ink-6)",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink-3)"
+    }
+  }, k), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink)",
+      textAlign: "right"
+    }
+  }, v)))),
+  /*#__PURE__*/React.createElement(OrgAttestation, {
+    org: org,
+    onDone: () => window.location.reload()
+  }), /*#__PURE__*/React.createElement(OrgOpportunities, {
+    org: org
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      marginTop: 22
+    },
+    onClick: () => window.riseCloud.signOut()
+  }, "Sign out"));
+}
+
+/* ── Review panel (Stage 3) ──────────────────────────────────────────────
+   Renders the bar fetched from the Worker, which owns the single definition.
+   Tightening the bar is one edit in VERIFICATION_BAR: the checklist, the
+   server-side enforcement and the audit record all move together, and this
+   component needs no change at all.
+
+   The tick boxes are not what approves anything. The Worker re-checks every
+   item independently, and the database refuses 'verified' without a named
+   human regardless of what this screen sends. */
+function ReviewPanel({
+  org,
+  bar,
+  onDone,
+  onClose
+}) {
+  const [confirmations, setConfirmations] = useState({});
+  const [notes, setNotes] = useState(org.review_notes || "");
+  const [checks, setChecks] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+
+  const runChecks = async () => {
+    setErr("");
+    setBusy("checks");
+    try {
+      const d = await window.riseCloud.adminAction("run-checks", { orgId: org.id });
+      setChecks(d.checks || []);
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy("");
+  };
+
+  const decide = async decision => {
+    setErr("");
+    setBusy(decision);
+    try {
+      await window.riseCloud.adminAction("verify-org", {
+        orgId: org.id,
+        decision,
+        notes,
+        confirmations
+      });
+      onDone();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy("");
+  };
+
+  const humanItems = (bar || []).filter(b => b.kind === "human");
+  const allTicked = humanItems.every(b => confirmations[b.id]);
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginTop: 16,
+      borderColor: "var(--fire)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      color: "var(--ink)"
+    }
+  }, "Review ", org.name), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close review",
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      color: "var(--ink-3)"
+    }
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 16
+  }))), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14,
+      lineHeight: 1.6
+    }
+  }, err), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      marginBottom: 14,
+      fontSize: 12.5,
+      padding: "7px 13px"
+    },
+    disabled: busy === "checks",
+    onClick: runChecks
+  }, busy === "checks" ? "Running…" : "Run automated checks"), checks && checks.map(c => /*#__PURE__*/React.createElement("div", {
+    key: c.check_key,
+    style: {
+      display: "flex",
+      gap: 9,
+      alignItems: "flex-start",
+      padding: "8px 0",
+      fontSize: 12.5,
+      lineHeight: 1.6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: c.passed ? "var(--success)" : "var(--danger)",
+      fontWeight: 700
+    }
+  }, c.passed ? "✓" : "✕"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink-2)"
+    }
+  }, /*#__PURE__*/React.createElement("strong", null, c.check_key.replace(/_/g, " ")), " — ", c.detail))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      paddingTop: 14,
+      borderTop: "1px solid var(--ink-6)"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".1em",
+      textTransform: "uppercase",
+      color: "var(--ink-4)",
+      marginBottom: 10
+    }
+  }, "The bar"), (bar || []).map(item => {
+    const auto = item.kind === "automated";
+    const attest = item.kind === "attestation";
+    const approval = item.kind === "approval";
+    const satisfied = auto ? checks && checks.every(c => c.passed) : attest ? org.screening_attested : approval ? false : !!confirmations[item.id];
+    const interactive = item.kind === "human";
+    return /*#__PURE__*/React.createElement("label", {
+      key: item.id,
+      style: {
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        padding: "9px 0",
+        cursor: interactive ? "pointer" : "default",
+        opacity: interactive ? 1 : .85
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: !!satisfied,
+      disabled: !interactive,
+      onChange: e => interactive && setConfirmations(p => ({
+        ...p,
+        [item.id]: e.target.checked
+      })),
+      style: {
+        width: 17,
+        height: 17,
+        marginTop: 1,
+        accentColor: "var(--fire)"
+      }
+    }), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+      style: {
+        display: "block",
+        fontSize: 13.5,
+        fontWeight: 600,
+        color: "var(--ink)"
+      }
+    }, item.label, !interactive && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 500,
+        color: "var(--ink-4)",
+        fontSize: 11.5
+      }
+    }, approval ? "  · recorded when you approve" : auto ? "  · from the checks above" : "  · from the organization")), /*#__PURE__*/React.createElement("span", {
+      style: {
+        display: "block",
+        fontSize: 12,
+        color: "var(--ink-3)",
+        lineHeight: 1.6,
+        marginTop: 2
+      }
+    }, item.detail)));
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "block",
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "var(--ink-2)",
+      marginBottom: 5
+    }
+  }, "Review notes"), /*#__PURE__*/React.createElement("textarea", {
+    className: "input",
+    rows: 3,
+    value: notes,
+    onChange: e => setNotes(e.target.value),
+    placeholder: "What you checked, and how.",
+    style: {
+      resize: "vertical",
+      fontFamily: "inherit"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9,
+      marginTop: 14,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire",
+    disabled: !!busy || !allTicked,
+    style: {
+      opacity: allTicked ? 1 : .5,
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => decide("verified")
+  }, busy === "verified" ? "Verifying…" : "Approve as RISE Verified"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    disabled: !!busy,
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px"
+    },
+    onClick: () => decide("in_review")
+  }, "Mark in review"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    disabled: !!busy,
+    style: {
+      fontSize: 12.5,
+      padding: "8px 14px",
+      color: "var(--danger)"
+    },
+    onClick: () => decide("suspended")
+  }, "Suspend")), !allTicked && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      marginTop: 9,
+      lineHeight: 1.6
+    }
+  }, "Approval needs every human confirmation ticked. The server checks the whole bar again regardless of what this screen sends."));
+}
+
+/* ── Admin review queue ──────────────────────────────────────────────────
+   Deliberately has no approve button.
+
+   An admin signs in as a normal user, so they are `authenticated`, and the
+   column revokes apply to them exactly as they do to an organization. There
+   is no browser path to set verification_status or publish a posting — by
+   design, not by omission. Stage 3 adds those actions behind a server
+   endpoint holding the service_role key, which is what makes "a human
+   checked this" a claim the database can actually back.
+
+   Set your own account to admin from the Supabase SQL editor:
+     update public.profiles set role = 'admin' where id = '<your-auth-uid>';
+   It cannot be done from the app, because UPDATE on that column is revoked. */
+function AdminQueue() {
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState("orgs");
+  const [bar, setBar] = useState([]);
+  const [reviewing, setReviewing] = useState(null);
+  const [busyId, setBusyId] = useState("");
+  const [err, setErr] = useState("");
+
+  const reload = useCallback(async () => {
+    const d = await window.riseCloud.adminQueue();
+    setData(d || { orgs: [], opps: [] });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await reload();
+      // The bar comes from the Worker so there is exactly one definition.
+      try {
+        const d = await window.riseCloud.adminAction("get-bar");
+        if (!cancelled) setBar(d.bar || []);
+      } catch (e) {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reload]);
+
+  const publishAct = async (action, id) => {
+    setErr("");
+    setBusyId(id);
+    try {
+      await window.riseCloud.adminAction(action, { opportunityId: id });
+      await reload();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusyId("");
+  };
+
+  const orgs = (data && data.orgs) || [];
+  const opps = (data && data.opps) || [];
+  const orgName = id => (orgs.find(o => o.id === id) || {}).name || "—";
+
+  const Row = ({ children }) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "12px 0",
+      borderTop: "1px solid var(--ink-6)",
+      fontSize: 13
+    }
+  }, children);
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "page-wrap",
+    style: {
+      maxWidth: 860,
+      margin: "0 auto",
+      padding: "48px 20px 80px"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: ".12em",
+      textTransform: "uppercase",
+      color: "var(--ink-3)",
+      marginBottom: 8
+    }
+  }, "RISE admin"), /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: 30,
+      color: "var(--ink)",
+      marginBottom: 8
+    }
+  }, "Review queue"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 9,
+      alignItems: "flex-start",
+      padding: "12px 14px",
+      background: "var(--surface-up)",
+      border: "1px solid var(--ink-5)",
+      borderRadius: 10,
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement(Shield, {
+    size: 14,
+    color: "var(--ink-3)"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.6
+    }
+  }, "Every action here runs through the server, which re-verifies your session with Supabase and re-checks your role on each request. The database refuses \"verified\" without a named human, and every decision is written to an append-only log.")), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 13px",
+      background: "var(--danger-bg)",
+      border: "1px solid rgba(196,40,40,.22)",
+      borderRadius: 9,
+      color: "var(--danger)",
+      fontSize: 12.5,
+      marginBottom: 14
+    }
+  }, err), reviewing && /*#__PURE__*/React.createElement(ReviewPanel, {
+    org: reviewing,
+    bar: bar,
+    onClose: () => setReviewing(null),
+    onDone: async () => {
+      setReviewing(null);
+      await reload();
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginBottom: 4
+    }
+  }, [["orgs", `Organizations (${orgs.length})`], ["opps", `Postings (${opps.length})`]].map(([id, lbl]) => /*#__PURE__*/React.createElement("button", {
+    key: id,
+    onClick: () => setTab(id),
+    style: {
+      padding: "6px 12px",
+      borderRadius: 8,
+      border: "1.5px solid " + (tab === id ? "var(--fire)" : "var(--ink-5)"),
+      background: tab === id ? "var(--ember)" : "transparent",
+      color: tab === id ? "var(--fire)" : "var(--ink-3)",
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit"
+    }
+  }, lbl))), !data && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginTop: 16
+    }
+  }, "Loading…"), data && tab === "orgs" && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginTop: 16
+    }
+  }, !orgs.length && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "No organizations yet."), orgs.map(o => /*#__PURE__*/React.createElement(Row, {
+    key: o.id
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      color: "var(--ink)",
+      fontSize: 14.5
+    }
+  }, o.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: o.verification_status === "verified" ? "var(--success)" : "var(--fire)",
+      fontWeight: 600,
+      fontSize: 12,
+      margin: "3px 0 6px"
+    }
+  }, o.verification_status), [["Type", o.org_type], ["Reg. number", o.registration_number], ["Website", o.website_url], ["Contact", `${o.contact_name || "—"}${o.contact_position ? ", " + o.contact_position : ""}`], ["Email", o.contact_email], ["Phone", o.contact_phone], ["City", [o.city, o.province].filter(Boolean).join(", ")]].filter(([, v]) => v).map(([k, v]) => /*#__PURE__*/React.createElement("div", {
+    key: k,
+    style: {
+      display: "flex",
+      gap: 10,
+      color: "var(--ink-3)",
+      fontSize: 12.5,
+      lineHeight: 1.7
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      minWidth: 100
+    }
+  }, k), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--ink-2)"
+    }
+  }, v))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost",
+    style: {
+      marginTop: 10,
+      fontSize: 12,
+      padding: "6px 12px"
+    },
+    onClick: () => setReviewing(o)
+  }, o.verification_status === "verified" ? "Re-review" : "Review")))), data && tab === "opps" && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginTop: 16
+    }
+  }, !opps.length && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)"
+    }
+  }, "No postings yet."), opps.map(o => /*#__PURE__*/React.createElement(Row, {
+    key: o.id
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      color: "var(--ink)",
+      fontSize: 14.5
+    }
+  }, o.title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      margin: "2px 0 5px"
+    }
+  }, orgName(o.org_id), " · ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: o.status === "published" ? "var(--success)" : "var(--fire)",
+      fontWeight: 600
+    }
+  }, o.status)), o.role_summary && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.65
+    }
+  }, o.role_summary), (o.status === "submitted" || o.status === "published") && /*#__PURE__*/React.createElement("button", {
+    className: o.status === "published" ? "btn btn-ghost" : "btn btn-fire",
+    disabled: busyId === o.id,
+    style: {
+      marginTop: 9,
+      fontSize: 12,
+      padding: "6px 12px"
+    },
+    onClick: () => publishAct(o.status === "published" ? "unpublish-opportunity" : "publish-opportunity", o.id)
+  }, busyId === o.id ? "Working…" : o.status === "published" ? "Unpublish" : "Publish")))));
+}
+
+/* ═══════════════════════════════════════
+   APP ROOT
+═══════════════════════════════════════ */
+/* ═══════════════════════════════════════
+   ABOUT US
+═══════════════════════════════════════ */
+function AboutPage({
+  setPage
+}) {
+  /* ── FOUNDER PHOTOS (embedded - load everywhere, every time) ──
+     If these are swapped, exchange NEIL_PHOTO and RAYAN_PHOTO below. */
+  const NEIL_PHOTO = "data:image/jpeg;base64,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";
+  const RAYAN_PHOTO = "data:image/jpeg;base64,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";
+  const h = React.createElement;
+  const AMB = "https://docs.google.com/forms/d/e/1FAIpQLSeDVY26ZW9CBGieE4bACfIBYlK61O6s_0KI6HxdCU0lpIP62Q/viewform?usp=sharing&ouid=117285547351667389810";
+  const wrap = {
+    maxWidth: 1000,
+    margin: "0 auto",
+    padding: "0 24px"
+  };
+  const Eyebrow = txt => h("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "var(--ink-3)",
+      textTransform: "uppercase",
+      letterSpacing: ".1em",
+      marginBottom: 16
+    }
+  }, txt);
+  const Rule = () => h("div", {
+    style: {
+      height: 1,
+      background: "var(--ink-5)",
+      margin: "0 0 20px"
+    }
+  });
+  const para = (t, i) => h("p", {
+    key: i,
+    style: {
+      fontSize: 15.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.95
+    }
+  }, t);
+  const founder = (initial, name, role, blurb, src) => h("div", {
+    key: name,
+    className: "card-lift",
+    style: {
+      padding: 16,
+      display: "flex",
+      flexDirection: "column"
+    }
+  }, h("div", {
+    style: {
+      position: "relative",
+      width: "100%",
+      aspectRatio: "1 / 1",
+      borderRadius: 12,
+      overflow: "hidden",
+      background: "linear-gradient(140deg, var(--fire), var(--fire-light))",
+      marginBottom: 16
+    }
+  }, h("span", {
+    className: "serif",
+    style: {
+      position: "absolute",
+      inset: 0,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 72,
+      color: "rgba(255,255,255,.92)"
+    }
+  }, initial), h("img", {
+    src: src,
+    alt: name,
+    loading: "eager",
+    decoding: "async",
+    onError: e => {
+      // Single fast retry with cache-bust, then fall back to the initial-letter avatar.
+      const img = e.currentTarget;
+      const step = Number(img.dataset.step || 0);
+      if (step === 0) {
+        img.dataset.step = 1;
+        const bust = (src.indexOf("?") === -1 ? "?" : "&") + "r=" + Date.now();
+        img.src = src + bust;
+      } else {
+        img.style.display = "none";
+      }
+    },
+    style: {
+      position: "absolute",
+      inset: 0,
+      width: "100%",
+      height: "100%",
+      objectFit: "cover",
+      display: "block"
+    }
+  })), h("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      marginBottom: 8,
+      flexWrap: "wrap"
+    }
+  }, h("h3", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.3px"
+    }
+  }, name), h("span", {
+    className: "badge badge-fire"
+  }, role)), h("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.8
+    }
+  }, blurb));
+  return h("div", {
+    className: "fu",
+    style: {
+      paddingBottom: 8
+    }
+  }, h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 56,
+      paddingBottom: 20,
+      textAlign: "center"
+    }
+  }, h("div", {
+    className: "badge badge-fire",
+    style: {
+      marginBottom: 20
+    }
+  }, h(Heart, {
+    size: 12
+  }), " Our story"), h("h1", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(32px,5vw,58px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1.5px",
+      lineHeight: 1.08,
+      maxWidth: 760,
+      margin: "0 auto 20px"
+    }
+  }, "We couldn't find volunteering that ", h("em", null, "fit us"), ". So we built it."), h("p", {
+    style: {
+      fontSize: "clamp(15px,2vw,19px)",
+      color: "var(--ink-2)",
+      lineHeight: 1.7,
+      maxWidth: 560,
+      margin: "0 auto"
+    }
+  }, "RISE is the thing we wish we'd had: a way to find volunteering that actually lines up with what you're into and what you're good at.")), h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 44,
+      paddingBottom: 20
+    }
+  }, Rule(), Eyebrow("Who we are"), h("div", {
+    className: "about-head",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 40,
+      alignItems: "end",
+      marginBottom: 30
+    }
+  }, h("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(26px,3.2vw,40px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1.1
+    }
+  }, "Meet the ", h("em", null, "founders.")), h("p", {
+    style: {
+      fontSize: 15,
+      color: "var(--ink-2)",
+      lineHeight: 1.9
+    }
+  }, "We're Neil and Rayan, twin brothers going into grade 12. We built RISE together, and the two of us still run all of it.")), h("div", {
+    className: "founders-grid",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 20
+    }
+  }, founder("N", "Neil Mekouar", "Product & Engineering", "Neil is the one who actually built RISE. He taught himself to code so the whole thing could stay free for students. If something on the site works, that's him.", NEIL_PHOTO), founder("R", "Rayan Mekouar", "Partnerships & Outreach", "Rayan handles the business side of the two of us. He's the one reaching out to schools and community groups to get RISE in front of students who'd actually use it.", RAYAN_PHOTO))), h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 44,
+      paddingBottom: 20
+    }
+  }, Rule(), Eyebrow("Why we started RISE"), h("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(26px,3.2vw,40px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1.1,
+      marginBottom: 26,
+      maxWidth: 620
+    }
+  }, "It started with our own ", h("em", null, "40 hours.")), h("div", {
+    style: {
+      maxWidth: 660,
+      display: "flex",
+      flexDirection: "column",
+      gap: 18
+    }
+  }, ["Like everyone at our school, we need 40 hours of community service to graduate. Going into grade 12, we finally started thinking about where to actually do ours, and we realized we had no idea where to begin.", "The bigger problem was that nothing we found had anything to do with what we're into. We each have things we're actually good at and care about, and we didn't want to just grab whatever random shift was open and count down the hours. We wanted to help people using the stuff we actually care about.", "But there wasn't a good way to do that. You either knew someone, or you took whatever generic slot came up first. So we decided to build the thing we were looking for: something that starts with what you're good at, and points you to a place that needs exactly that."].map(para))), h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 24,
+      paddingBottom: 24
+    }
+  }, h("div", {
+    className: "card-ink",
+    style: {
+      padding: "clamp(30px,4vw,44px) clamp(26px,4vw,40px)"
+    }
+  }, h(Quote, {
+    size: 30,
+    color: "var(--fire-light)",
+    style: {
+      marginBottom: 14,
+      opacity: 0.9
+    }
+  }), h("p", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(20px,2.6vw,30px)",
+      fontWeight: 400,
+      lineHeight: 1.35,
+      letterSpacing: "-.4px"
+    }
+  }, "We figured if we were this stuck on it, a lot of other students probably ", h("em", null, "were too.")))), h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 20,
+      paddingBottom: 20
+    }
+  }, Rule(), Eyebrow("The problem we fix"), h("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(24px,3vw,36px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1.12,
+      marginBottom: 28,
+      maxWidth: 640
+    }
+  }, "Most volunteering ignores what you're ", h("em", null, "actually into.")), h("div", {
+    className: "about-2col",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 18
+    }
+  }, h("div", {
+    className: "card",
+    style: {
+      padding: "24px 22px"
+    }
+  }, h("div", {
+    className: "badge badge-neutral",
+    style: {
+      marginBottom: 14
+    }
+  }, "The usual way"), h("p", {
+    style: {
+      fontSize: 16,
+      color: "var(--ink)",
+      fontWeight: 500,
+      lineHeight: 1.6,
+      marginBottom: 10
+    }
+  }, "“Here's a list of open spots. Pick one.”"), h("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-3)",
+      lineHeight: 1.8
+    }
+  }, "Most of it has nothing to do with your interests, so it turns into just counting down the hours.")), h("div", {
+    className: "card-tinted",
+    style: {
+      padding: "24px 22px"
+    }
+  }, h("div", {
+    className: "badge badge-fire",
+    style: {
+      marginBottom: 14
+    }
+  }, h(Flame, {
+    size: 11
+  }), " With RISE"), h("p", {
+    style: {
+      fontSize: 16,
+      color: "var(--ink)",
+      fontWeight: 500,
+      lineHeight: 1.6,
+      marginBottom: 10
+    }
+  }, "“Here's volunteering that actually fits you.”"), h("p", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--ink-2)",
+      lineHeight: 1.8
+    }
+  }, "Play music, and you get matched with music. Tutor, coach, code, or care about the environment? Same idea.")))), h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 44,
+      paddingBottom: 20
+    }
+  }, Rule(), Eyebrow("Where we're going"), h("h2", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(26px,3.2vw,40px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1px",
+      lineHeight: 1.1,
+      marginBottom: 24,
+      maxWidth: 680
+    }
+  }, "We're building it as we ", h("em", null, "go.")), h("div", {
+    style: {
+      maxWidth: 660,
+      display: "flex",
+      flexDirection: "column",
+      gap: 18
+    }
+  }, ["We're still in high school ourselves, so we're figuring a lot of this out as we go. Right now RISE works in 60+ cities across Canada, and mostly we just want more students to use it and more Ambassadors starting their own projects in their own schools.", "We're not trying to make volunteering sound huge or life-changing. We just think that if it fit people better, more of them would actually want to do it, and it would mean more to the people on the other end too. That's the idea, and we're going to keep working on it."].map(para))), h("section", {
+    style: {
+      ...wrap,
+      paddingTop: 24,
+      paddingBottom: 56
+    }
+  }, h("div", {
+    style: {
+      background: "var(--fire)",
+      borderRadius: 20,
+      padding: "clamp(32px,5vw,52px) clamp(26px,4vw,44px)",
+      textAlign: "center"
+    }
+  }, h("h3", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(24px,3.4vw,38px)",
+      fontWeight: 400,
+      color: "#fff",
+      letterSpacing: "-.6px",
+      lineHeight: 1.12,
+      marginBottom: 14
+    }
+  }, "Want to help us build it?"), h("p", {
+    style: {
+      fontSize: 15,
+      color: "color-mix(in srgb, #fff 88%, transparent)",
+      lineHeight: 1.7,
+      maxWidth: 520,
+      margin: "0 auto 26px"
+    }
+  }, "Whether you've got a talent you want to put to use or you just want to say hi, send us a message. We read all of them."), h("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      justifyContent: "center",
+      flexWrap: "wrap"
+    }
+  }, h("a", {
+    href: AMB,
+    target: "_blank",
+    rel: "noreferrer",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "12px 22px",
+      background: "var(--surface)",
+      color: "var(--fire)",
+      border: "1px solid var(--ink-6)",
+      borderRadius: 9,
+      fontSize: 14,
+      fontWeight: 700,
+      textDecoration: "none"
+    }
+  }, h(Star, {
+    size: 14
+  }), " Become an Ambassador"), h("button", {
+    onClick: () => setPage("match"),
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "12px 22px",
+      background: "transparent",
+      color: "#fff",
+      border: "1.5px solid color-mix(in srgb, #fff 55%, transparent)",
+      borderRadius: 9,
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: "inherit"
+    }
+  }, "Find your match ", h(ArrowRight, {
+    size: 14
+  }))), h("p", {
+    style: {
+      fontSize: 12.5,
+      color: "color-mix(in srgb, #fff 72%, transparent)",
+      marginTop: 18
+    }
+  }, "Or just say hi - ", h("a", {
+    href: "mailto:rise4impact.together@gmail.com",
+    style: {
+      color: "#fff",
+      fontWeight: 600,
+      textDecoration: "underline"
+    }
+  }, "rise4impact.together@gmail.com")))));
+}
+function ProfilePage({
+  go,
+  favs,
+  toggleFav,
+  favId,
+  openSignIn
+}) {
+  const user = useAuth();
+  const [profile, setProfile] = useStorage("rise_profile", {
+    interests: [],
+    age: "",
+    bio: "",
+    goal: ""
+  }, true);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const set = patch => {
+    setProfile(p => ({
+      ...p,
+      ...patch
+    }));
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1400);
+  };
+  const toggleInterest = id => {
+    setProfile(p => {
+      const has = (p.interests || []).includes(id);
+      return {
+        ...p,
+        interests: has ? p.interests.filter(x => x !== id) : [...(p.interests || []), id]
+      };
+    });
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1400);
+  };
+
+  // Signed-out state: gentle prompt
+  if (!user) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "view-fade",
+      style: {
+        maxWidth: 560,
+        margin: "0 auto",
+        padding: "80px 20px",
+        textAlign: "center"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "serif",
+      style: {
+        fontSize: 34,
+        color: "var(--ink)",
+        letterSpacing: "-1px",
+        marginBottom: 10
+      }
+    }, "Your profile"), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 15,
+        color: "var(--ink-3)",
+        marginBottom: 24,
+        lineHeight: 1.6
+      }
+    }, "Sign in to build your profile, save your interests, and get matches tuned to you."), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-fire press",
+      onClick: openSignIn,
+      style: {
+        padding: "12px 26px",
+        fontSize: 14
+      }
+    }, "Log in or sign up"));
+  }
+  const display = user.username || user.name || (user.email || "").split("@")[0];
+  const initial = (display || "?").charAt(0).toUpperCase();
+  const interests = profile.interests || [];
+  const chosenInterestObjs = PROFILE_INTERESTS.filter(i => interests.includes(i.id));
+
+  // innovative touch: a "match profile strength" meter that rewards a filled-out profile
+  const strength = Math.min(100, Math.round((interests.length ? 34 : 0) + (profile.age ? 22 : 0) + (profile.bio && profile.bio.trim().length > 12 ? 22 : 0) + (favs && favs.length ? 22 : 0)));
+  const sectionTitle = (t, sub) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-.3px"
+    }
+  }, t), sub ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--ink-3)",
+      marginTop: 2
+    }
+  }, sub) : null);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "view-fade",
+    style: {
+      maxWidth: 780,
+      margin: "0 auto",
+      padding: "40px 20px 80px"
+    }
+  },
+  // ── Header: avatar + name in classic RISE serif ──
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 18,
+      marginBottom: 10,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 68,
+      height: 68,
+      borderRadius: "50%",
+      background: "linear-gradient(135deg, var(--fire), var(--fire-light))",
+      color: "#fff",
+      fontWeight: 800,
+      fontSize: 30,
+      fontFamily: "Georgia, serif",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      boxShadow: "0 6px 20px rgba(214,86,12,.32)"
+    }
+  }, initial), /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    className: "serif",
+    style: {
+      fontSize: "clamp(30px,5vw,46px)",
+      fontWeight: 400,
+      color: "var(--ink)",
+      letterSpacing: "-1.5px",
+      lineHeight: 1.05
+    }
+  }, display), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginTop: 3,
+      display: "flex",
+      alignItems: "center",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(CheckCircle, {
+    size: 12,
+    color: "var(--success)"
+  }), user.email || "Signed in"))), savedFlash ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--success)",
+      fontWeight: 600,
+      marginBottom: 18
+    }
+  }, "Saved") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 12
+    }
+  }),
+  // ── Profile strength meter (innovative) ──
+  /*#__PURE__*/
+  React.createElement("div", {
+    className: "card",
+    style: {
+      padding: "16px 18px",
+      marginBottom: 22,
+      background: "linear-gradient(135deg, var(--surface) 0%, var(--surface-warm) 100%)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: "var(--ink-2)",
+      textTransform: "uppercase",
+      letterSpacing: ".06em"
+    }
+  }, "Profile strength"), /*#__PURE__*/React.createElement("span", {
+    className: "serif",
+    style: {
+      fontSize: 20,
+      color: "var(--fire)"
+    }
+  }, strength + "%")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 8,
+      background: "var(--ink-6)",
+      borderRadius: 99,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: strength + "%",
+      height: "100%",
+      background: "linear-gradient(90deg, var(--fire), var(--fire-light))",
+      borderRadius: 99,
+      transition: "width .5s cubic-bezier(.2,.7,.3,1)"
+    }
+  })), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--ink-3)",
+      marginTop: 8
+    }
+  }, strength >= 100 ? "Your profile is complete — matches will be well tuned to you." : "Add interests, your age, and a short bio to sharpen your matches.")),
+  // ── Interests ──
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 28
+    }
+  }, sectionTitle("Your interests", "Pick anything that fits. These directly tune the matches you get."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 8
+    }
+  }, PROFILE_INTERESTS.map(it => {
+    const on = interests.includes(it.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: it.id,
+      onClick: () => toggleInterest(it.id),
+      className: "press",
+      "aria-pressed": on,
+      style: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 13px",
+        borderRadius: 999,
+        cursor: "pointer",
+        fontFamily: "'DM Sans',sans-serif",
+        fontSize: 13,
+        fontWeight: 600,
+        transition: "color ..16s, background-color ..16s, border-color ..16s, box-shadow ..16s, transform ..16s, opacity ..16s",
+        border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
+        background: on ? "var(--ember)" : "var(--surface)",
+        color: on ? "var(--fire)" : "var(--ink-2)"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      "aria-hidden": "true"
+    }, it.emoji), it.label);
+  })), interests.length ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 12
+    }
+  }, chosenInterestObjs.length + " selected — your next search will lean toward these.") : null),
+  // ── Age + short bio ──
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "120px 1fr",
+      gap: 16,
+      marginBottom: 28,
+      alignItems: "start"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    htmlFor: "prof-age",
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 700,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "Age"), /*#__PURE__*/React.createElement("input", {
+    id: "prof-age",
+    className: "input",
+    type: "number",
+    min: 13,
+    max: 19,
+    placeholder: "—",
+    value: profile.age || "",
+    onChange: e => set({
+      age: e.target.value
+    }),
+    style: {
+      width: "100%"
+    }
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    htmlFor: "prof-bio",
+    style: {
+      display: "block",
+      fontSize: 12,
+      fontWeight: 700,
+      color: "var(--ink-2)",
+      marginBottom: 6
+    }
+  }, "About you"), /*#__PURE__*/React.createElement("textarea", {
+    id: "prof-bio",
+    className: "input",
+    placeholder: "A sentence or two about what you care about…",
+    value: profile.bio || "",
+    onChange: e => set({
+      bio: e.target.value
+    }),
+    maxLength: 240,
+    rows: 3,
+    style: {
+      width: "100%",
+      resize: "vertical",
+      fontFamily: "'DM Sans',sans-serif",
+      lineHeight: 1.6
+    }
+  }))),
+  // ── Favourite matches ──
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 30
+    }
+  }, sectionTitle("Favourite matches", favs && favs.length ? "Opportunities you saved." : null), !favs || !favs.length ? /*#__PURE__*/React.createElement("div", {
+    className: "card-ghost",
+    style: {
+      padding: "26px 20px",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Heart, {
+    size: 22,
+    color: "var(--ink-5)",
+    style: {
+      marginBottom: 8
+    }
+  }), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink-3)",
+      marginBottom: 12
+    }
+  }, "No favourites yet. Tap the heart on any match to save it here."), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-fire press",
+    onClick: () => go("match"),
+    style: {
+      padding: "9px 18px",
+      fontSize: 13
+    }
+  }, "Find matches")) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, favs.slice(0, 8).map((f, i) => /*#__PURE__*/React.createElement("div", {
+    key: favId ? favId(f) : i,
+    className: "card",
+    style: {
+      padding: "14px 16px",
+      display: "flex",
+      alignItems: "center",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: "var(--ink)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, f.title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, f.org)), f.link ? /*#__PURE__*/React.createElement("a", {
+    href: f.link,
+    target: "_blank",
+    rel: "noreferrer",
+    className: "press",
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: "var(--fire)",
+      textDecoration: "none",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 4,
+      flexShrink: 0
+    }
+  }, "Visit ", /*#__PURE__*/React.createElement(ExternalLink, {
+    size: 11
+  })) : null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => toggleFav(f),
+    "aria-label": "Remove favourite",
+    className: "press",
+    style: {
+      border: "none",
+      background: "transparent",
+      cursor: "pointer",
+      padding: 4,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(Heart, {
+    size: 16,
+    color: "var(--fire)",
+    fill: "var(--fire)"
+  })))))),
+  // ── Log out at the very bottom ──
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      borderTop: "1px solid var(--ink-5)",
+      paddingTop: 22,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      window.riseCloud.signOut();
+      go("home");
+    },
+    className: "press",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "11px 20px",
+      background: "transparent",
+      border: "1.5px solid var(--ink-5)",
+      borderRadius: 10,
+      cursor: "pointer",
+      fontFamily: "'DM Sans',sans-serif",
+      fontSize: 13,
+      fontWeight: 700,
+      color: "var(--ink-2)",
+      transition: "color ..16s, background-color ..16s, border-color ..16s, box-shadow ..16s, transform ..16s, opacity ..16s"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.borderColor = "var(--danger)";
+      e.currentTarget.style.color = "var(--danger)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.borderColor = "var(--ink-5)";
+      e.currentTarget.style.color = "var(--ink-2)";
+    }
+  }, /*#__PURE__*/React.createElement(LogOut, {
+    size: 14
+  }), "Log out")));
+}
+function App() {
+  const [page, setPageRaw] = useStorage("rise_page6", "home");
+  const [isOnline, setOnline] = useState(true);
+  // REAL network state (distinct from the offline-mode toggle above), for the PWA indicator.
+  const [netOnline, setNetOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine !== false : true);
+  const [showBackOnline, setShowBackOnline] = useState(false);
+  useEffect(() => {
+    const on = () => {
+      setNetOnline(true);
+      setShowBackOnline(true);
+      setTimeout(() => setShowBackOnline(false), 3200);
+    };
+    const off = () => setNetOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+  // Inject a real PWA manifest + theme-color so the app is installable. No service
+  // worker is faked; genuine offline capability already comes from local storage.
+  useEffect(() => {
+    try {
+      if (!document.querySelector('link[rel="manifest"]')) {
+        const manifest = {
+          name: "RISE — Turn Talent into Impact",
+          short_name: "RISE",
+          description: "Match your talents to real volunteering, track your impact, and earn it — online or off.",
+          start_url: ".",
+          display: "standalone",
+          background_color: "#F4F1EB",
+          theme_color: "#D6560C",
+          icons: [{
+            src: "/android-chrome-192x192.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "any maskable"
+          }, {
+            src: "/android-chrome-512x512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any maskable"
+          }]
+        };
+        const blob = new Blob([JSON.stringify(manifest)], {
+          type: "application/manifest+json"
+        });
+        const link = document.createElement("link");
+        link.rel = "manifest";
+        link.href = URL.createObjectURL(blob);
+        document.head.appendChild(link);
+      }
+      if (!document.querySelector('meta[name="theme-color"]')) {
+        const m = document.createElement("meta");
+        m.name = "theme-color";
+        m.content = "#D6560C";
+        document.head.appendChild(m);
+      }
+    } catch (e) {}
+  }, []);
+  const [favs, setFavs] = useStorage("rise_favorites", [], true);
+  const favId = o => (o.link || "") + "|" + (o.org || "") + "|" + (o.title || "");
+  const toggleFav = useCallback(opp => {
+    setFavs(prev => {
+      const id = favId(opp);
+      if (prev.some(f => favId(f) === id)) return prev.filter(f => favId(f) !== id);
+      const {
+        title,
+        org,
+        tagline,
+        desc,
+        where,
+        hours,
+        link,
+        tags
+      } = opp;
+      return [...prev, {
+        title,
+        org,
+        tagline,
+        desc,
+        where,
+        hours,
+        link,
+        tags
+      }];
+    });
+  }, [setFavs]);
+  /* RISE opens light, always. It used to follow the device's colour scheme on
+     a first visit, which meant people who had never asked for a dark site got
+     one and were surprised by it. Dark mode is a choice made in Settings, and
+     once it is made useStorage keeps it for every visit after. */
+  const [settings, setSettings] = useStorage("rise_cfg", {
+    darkMode: false,
+    fontSize: "md",
+    easyReading: false,
+    underlineLinks: false,
+    reducedMotion: false,
+    highContrast: false
+  }, true);
+  const [signInOpen, setSignIn] = useState(false);
+  const [signInMode, setSignInMode] = useState("signin");
+  const go = useCallback(p => {
+    setPageRaw(p);
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth"
+    });
+  }, [setPageRaw]);
+  const updateSetting = useCallback((key, val) => {
+    setSettings(prev => ({
+      ...prev,
+      [key]: val
+    }));
+  }, [setSettings]);
+
+  /* The theme attributes live on a wrapper <div>, so <body> kept the light
+     palette behind a dark app. Invisible most of the time, but rubber-band
+     overscroll on iOS and macOS pulls past the wrapper and flashes cream
+     through a dark UI. Mirroring onto <html> lets the body rule resolve the
+     dark token too, and `color-scheme` hands the native scrollbars and
+     browser chrome the right palette. */
+  useEffect(() => {
+    const de = document.documentElement;
+    de.setAttribute("data-theme", settings.darkMode ? "dark" : "light");
+    de.style.colorScheme = settings.darkMode ? "dark" : "light";
+  }, [settings.darkMode]);
+  /* ── Organization routing ────────────────────────────────────────────
+     Two ways in, both explicit, neither in the main navigation:
+
+       ?org        the registration form, linked from the footer
+       role        a signed-in organization always lands on its dashboard
+
+     A volunteer session matches neither branch, so `safePage` and everything
+     below it behave exactly as they did before Stage 1. */
+  const authUser = useAuth();
+  const isOrgAccount = !!authUser && authUser.role === "organization";
+  const isAdminAccount = !!authUser && authUser.role === "admin";
+  const [orgRoute, setOrgRoute] = useState(() => {
+    try {
+      /* Two ways in. `?org` is kept because links to it already exist, but
+         /organizations is the one to hand out: it survives being retyped from
+         a business card, read down a phone, or pasted into an email, which is
+         how an organization actually arrives here. The asset config already
+         serves the app for unknown paths, so no server change was needed. */
+      const path = (window.location.pathname || "").replace(/\/+$/, "").toLowerCase();
+      if (path === "/organizations" || path === "/orgs") return true;
+      return new URLSearchParams(window.location.search).has("org");
+    } catch (e) {
+      return false;
+    }
+  });
+  // Once an organization account signs in, drop the ?org marker so a refresh
+  // lands on the dashboard rather than back on the empty registration form.
+  useEffect(() => {
+    if (!isOrgAccount || !orgRoute) return;
+    setOrgRoute(false);
+    try {
+      history.replaceState(null, "", window.location.pathname);
+    } catch (e) {}
+  }, [isOrgAccount, orgRoute]);
+
+  if (isOrgAccount || isAdminAccount) {
+    return /*#__PURE__*/React.createElement("div", {
+      "data-theme": settings.darkMode ? "dark" : "light",
+      "data-contrast": settings.highContrast ? "high" : "normal",
+      "data-size": settings.fontSize,
+      style: {
+        minHeight: "100vh",
+        background: "var(--canvas)"
+      }
+    }, /*#__PURE__*/React.createElement(Styles, null), isAdminAccount ? /*#__PURE__*/React.createElement(AdminQueue, null) : /*#__PURE__*/React.createElement(OrgDashboard, null));
+  }
+  if (orgRoute) {
+    return /*#__PURE__*/React.createElement("div", {
+      "data-theme": settings.darkMode ? "dark" : "light",
+      "data-contrast": settings.highContrast ? "high" : "normal",
+      "data-size": settings.fontSize,
+      style: {
+        minHeight: "100vh",
+        background: "var(--canvas)"
+      }
+    }, /*#__PURE__*/React.createElement(Styles, null), /*#__PURE__*/React.createElement(OrgSignupPage, {
+      go: () => {
+        setOrgRoute(false);
+        try {
+          history.replaceState(null, "", window.location.pathname);
+        } catch (e) {}
+      }
+    }));
+  }
+
+  const safePage = page === "favorites" ? favs.length ? "favorites" : "home" : ["home", "match", "hours", "settings", "about", "profile"].includes(page) ? page : "home";
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    "data-theme": settings.darkMode ? "dark" : "light",
+    "data-contrast": settings.highContrast ? "high" : "normal",
+    "data-size": settings.fontSize,
+    "data-read": settings.easyReading ? "easy" : "normal",
+    "data-links": settings.underlineLinks ? "underline" : "normal",
+    className: settings.reducedMotion ? "rm" : "",
+    style: {
+      minHeight: "100vh",
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--canvas)",
+      fontFamily: "'DM Sans',-apple-system,sans-serif",
+      color: "var(--ink)",
+      transition: "background .28s,color .28s"
+    }
+  }, /*#__PURE__*/React.createElement(Styles, null), /*#__PURE__*/React.createElement("a", {
+    href: "#rise-main",
+    className: "skip-link"
+  }, "Skip to main content"), !netOnline &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    role: "status",
+    style: {
+      position: "sticky",
+      top: 0,
+      zIndex: 60,
+      background: "var(--ink)",
+      color: "var(--canvas)",
+      fontSize: 12.5,
+      fontWeight: 600,
+      textAlign: "center",
+      padding: "7px 14px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(WifiOff, {
+    size: 13,
+    color: "var(--canvas)"
+  }), " You're offline — your saved opportunities, hours, and badges all still work. New changes sync when you reconnect."), showBackOnline &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    role: "status",
+    className: "badge-pop",
+    style: {
+      position: "fixed",
+      bottom: 20,
+      left: "50%",
+      transform: "translateX(-50%)",
+      zIndex: 9998,
+      background: "var(--success)",
+      color: "#fff",
+      fontSize: 13,
+      fontWeight: 700,
+      padding: "10px 18px",
+      borderRadius: 999,
+      boxShadow: "0 8px 26px rgba(26,107,60,.4)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 13,
+    color: "#fff"
+  }), " Back online — syncing your progress"), /*#__PURE__*/React.createElement(Nav, {
+    page: safePage,
+    setPage: go,
+    openSignIn: () => {
+      setSignInMode("signin");
+      setSignIn(true);
+    },
+    openSignup: () => {
+      setSignInMode("signup");
+      setSignIn(true);
+    },
+    favCount: favs.length
+  }), /*#__PURE__*/React.createElement(SignInModal, {
+    open: signInOpen,
+    initialMode: signInMode,
+    onClose: () => setSignIn(false)
+  }), /*#__PURE__*/React.createElement("main", {
+    id: "rise-main",
+    style: {
+      flex: 1
+    }
+  }, safePage === "home" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(HomePage, {
+    setPage: go
+  }), safePage === "match" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(MatcherPage, {
+    isOnline: isOnline,
+    favs: favs,
+    toggleFav: toggleFav,
+    favId: favId
+  }), safePage === "favorites" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(FavoritesPage, {
+    favs: favs,
+    toggleFav: toggleFav,
+    go: go
+  }), safePage === "hours" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(HoursPage, null), safePage === "about" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(AboutPage, {
+    setPage: go
+  }), safePage === "settings" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(SettingsPage, {
+    settings: settings,
+    updateSetting: updateSetting,
+    isOnline: isOnline,
+    setOnline: setOnline
+  }), safePage === "profile" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ProfilePage, {
+    go: go,
+    favs: favs,
+    toggleFav: toggleFav,
+    favId: favId,
+    openSignIn: () => {
+      setSignInMode("signin");
+      setSignIn(true);
+    }
+  }), (safePage === "home" || safePage === "hours" || safePage === "about") &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ContactSection, null)), /*#__PURE__*/React.createElement(Footer, {
+    setPage: go,
+    favCount: favs.length
+  }));
+}
+
+/* Mount */
+
+class RiseErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      err: null
+    };
+  }
+  static getDerivedStateFromError(err) {
+    return {
+      err
+    };
+  }
+  render() {
+    if (this.state.err) {
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 14,
+          fontFamily: "sans-serif",
+          background: "#FAF7F2",
+          color: "#1A0E06",
+          padding: 24,
+          textAlign: "center"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          width: 44,
+          height: 44,
+          borderRadius: 12,
+          background: "linear-gradient(135deg,#D6560C,#F97316)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#fff",
+          fontWeight: 900,
+          fontSize: 22
+        }
+      }, "R"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 17,
+          fontWeight: 700
+        }
+      }, "Something went wrong"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 13,
+          color: "#8a7a6a",
+          maxWidth: 380,
+          lineHeight: 1.6
+        }
+      }, "Please refresh the page. If this keeps happening, contact us at rise4impact.together@gmail.com - it helps if you mention what you clicked."), /*#__PURE__*/React.createElement("button", {
+        onClick: () => window.location.reload(),
+        style: {
+          marginTop: 6,
+          padding: "10px 22px",
+          background: "#D6560C",
+          color: "#fff",
+          border: "none",
+          borderRadius: 10,
+          fontWeight: 700,
+          fontSize: 14,
+          cursor: "pointer"
+        }
+      }, "Refresh"));
+    }
+    return this.props.children;
+  }
+}
+function AppWithBoundary() {
+  return /*#__PURE__*/React.createElement(RiseErrorBoundary, null, /*#__PURE__*/React.createElement(App, null));
+}
+/* ══════════════════════════════════════════════════════════════════
+   THE HIDDEN LAYER
+
+   Nothing here is load-bearing. It attaches to the document after the
+   app has mounted and touches no React state, so if any of it breaks,
+   RISE carries on exactly as before. That is deliberate: delight should
+   never be able to take down the thing it decorates.
+
+   Three rules it holds to throughout:
+
+   1. It never fires while you are typing. Every trigger checks the
+      focused element first, so writing "rise" into the search box, a
+      motivation field, or an application form does nothing at all.
+   2. It respects prefers-reduced-motion. Moving particles are skipped
+      entirely for anyone who has asked the OS for stillness. Sound and
+      the piano still work, because neither of those moves anything.
+      Inclusion is one of the four values; this is what it looks like
+      in a hundred lines of Javascript.
+   3. Audio is built on first use, never on load. Browsers suspend an
+      AudioContext created without a gesture, and building one on page
+      load costs every visitor a little memory for a joke most of them
+      will never find.
+   ══════════════════════════════════════════════════════════════════ */
+(function riseHiddenLayer() {
+  if (typeof window === "undefined" || window.__riseHidden) return;
+  window.__riseHidden = true;
+
+  var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ── a small voice ──
+     A sine with a fast attack and a long exponential decay reads as a
+     struck string rather than a beep. Two detuned partials and a touch
+     of the octave above give it enough body to sound like a toy piano,
+     which is the intent: Neil plays, so the site should be able to. */
+  var ac = null;
+  function note(freq, when, gain, dur) {
+    try {
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      if (ac.state === "suspended") ac.resume();
+      var t = ac.currentTime + (when || 0);
+      var out = ac.createGain();
+      out.gain.setValueAtTime(0.0001, t);
+      out.gain.exponentialRampToValueAtTime(gain || 0.16, t + 0.012);
+      out.gain.exponentialRampToValueAtTime(0.0001, t + (dur || 1.1));
+      out.connect(ac.destination);
+      [[1, 1], [2.01, 0.28], [3, 0.08]].forEach(function (p) {
+        var o = ac.createOscillator();
+        var g = ac.createGain();
+        o.type = "sine";
+        o.frequency.value = freq * p[0];
+        g.gain.value = p[1];
+        o.connect(g); g.connect(out);
+        o.start(t); o.stop(t + (dur || 1.1) + 0.05);
+      });
+    } catch (e) {/* no audio device, or the browser said no. Silence is fine. */}
+  }
+
+  /* ── embers ──
+     The brand is a flame and the verb is "rise", so the particle goes
+     up. Absolute-positioned, pointer-events none, and each one removes
+     itself on animationend, so nothing accumulates in the DOM. */
+  function embers(count, originX) {
+    if (still) return;
+    var layer = document.createElement("div");
+    layer.className = "rise-ember-layer";
+    document.body.appendChild(layer);
+    for (var i = 0; i < count; i++) {
+      var e = document.createElement("span");
+      e.className = "rise-ember";
+      var x = originX == null ? Math.random() * 100 : originX + (Math.random() * 30 - 15);
+      e.style.left = Math.max(0, Math.min(100, x)) + "vw";
+      e.style.setProperty("--dx", (Math.random() * 90 - 45) + "px");
+      e.style.setProperty("--sz", (3 + Math.random() * 6).toFixed(1) + "px");
+      e.style.animationDelay = (Math.random() * 0.5).toFixed(2) + "s";
+      e.style.animationDuration = (2.1 + Math.random() * 1.6).toFixed(2) + "s";
+      layer.appendChild(e);
+    }
+    setTimeout(function () { layer.remove(); }, 4600);
+  }
+
+  /* ── typing, but only when you are not ──
+     contentEditable is checked as well as tag name: the draft-email box
+     and anything rich-text would otherwise swallow a student's letters
+     into an easter egg. */
+  function typingSomewhereReal() {
+    var el = document.activeElement;
+    if (!el) return false;
+    var tag = (el.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+  }
+
+  var buf = "";
+  var KONAMI = "ArrowUp,ArrowUp,ArrowDown,ArrowDown,ArrowLeft,ArrowRight,ArrowLeft,ArrowRight,b,a";
+  var keys = [];
+
+  /* ── the wordmark answers to its own name ──
+     Type r-i-s-e and the four letters light in turn over a rising
+     figure. A major pentatonic climb, because it has no semitones in it
+     and therefore cannot sound wrong over anything. */
+  function riseFanfare() {
+    var F = [293.66, 349.23, 440.0, 587.33]; // D4 F4 A4 D5
+    F.forEach(function (f, i) { note(f, i * 0.13, 0.17, 1.5); });
+    embers(26);
+    var mark = document.querySelector('img[alt="RISE logo"]');
+    if (mark && !still) {
+      mark.style.transition = "transform .5s cubic-bezier(.34,1.56,.64,1)";
+      mark.style.transform = "translateY(-8px) rotate(-8deg) scale(1.12)";
+      setTimeout(function () { mark.style.transform = ""; }, 520);
+    }
+  }
+
+  /* ── the piano ──
+     Neil plays. Rayan plays violin, which is harder to fake with three
+     oscillators, so the piano it is. Eight white keys on the home row,
+     click or press, and Escape puts it away. It is the one egg that
+     rewards staying rather than just firing once. */
+  var ROW = "asdfghjk";
+  var SCALE = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+  var piano = null;
+  function togglePiano() {
+    if (piano) { piano.remove(); piano = null; return; }
+    piano = document.createElement("div");
+    piano.className = "rise-piano";
+    piano.setAttribute("role", "group");
+    piano.setAttribute("aria-label", "Hidden piano. Press the letters A through K, or Escape to close.");
+    var inner = document.createElement("div");
+    inner.className = "rise-piano-keys";
+    ROW.split("").forEach(function (ch, i) {
+      var k = document.createElement("button");
+      k.type = "button";
+      k.className = "rise-key";
+      k.dataset.k = ch;
+      k.textContent = ch.toUpperCase();
+      k.setAttribute("aria-label", "Play note " + (i + 1));
+      k.addEventListener("click", function () { strike(ch); });
+      inner.appendChild(k);
+    });
+    var hint = document.createElement("div");
+    hint.className = "rise-piano-hint";
+    hint.textContent = "for Neil and Rayan. esc to close";
+    piano.appendChild(inner);
+    piano.appendChild(hint);
+    document.body.appendChild(piano);
+  }
+  function strike(ch) {
+    var i = ROW.indexOf(ch);
+    if (i < 0) return;
+    note(SCALE[i], 0, 0.2, 1.4);
+    var k = piano && piano.querySelector('.rise-key[data-k="' + ch + '"]');
+    if (k) { k.classList.add("hit"); setTimeout(function () { k.classList.remove("hit"); }, 160); }
+    if (!still) embers(2, (i / 8) * 100 + 6);
+  }
+
+  document.addEventListener("keydown", function (ev) {
+    if (typingSomewhereReal() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+    /* isConnected, not just truthiness. If the node leaves the DOM by any
+       route other than our own close (a stray cleanup, a future re-render
+       that clears body children), the variable still points at it, and the
+       branch below would keep swallowing keystrokes into a piano nobody can
+       see: typing "rise" would silently play one note instead of firing the
+       fanfare, because "s" is a piano key. Caught in testing, where a helper
+       removed the node directly and the eggs quietly stopped working. */
+    if (piano && !piano.isConnected) piano = null;
+
+    if (piano) {
+      if (ev.key === "Escape") { piano.remove(); piano = null; return; }
+      if (ROW.indexOf(ev.key) >= 0) { strike(ev.key); return; }
+    }
+
+    keys.push(ev.key); if (keys.length > 10) keys.shift();
+    if (keys.join(",") === KONAMI) {
+      keys = [];
+      /* The full chord, then a long climb. Whoever gets here earned it. */
+      [261.63, 329.63, 392.0, 523.25].forEach(function (f) { note(f, 0, 0.13, 2.4); });
+      [587.33, 659.25, 783.99, 880.0, 1046.5].forEach(function (f, i) { note(f, 0.5 + i * 0.1, 0.12, 1.6); });
+      embers(70);
+      document.body.classList.add("rise-glow");
+      setTimeout(function () { document.body.classList.remove("rise-glow"); }, 2600);
+      return;
+    }
+
+    if (ev.key && ev.key.length === 1) {
+      buf = (buf + ev.key.toLowerCase()).slice(-8);
+      if (buf.endsWith("rise")) { buf = ""; riseFanfare(); }
+      else if (buf.endsWith("piano")) { buf = ""; togglePiano(); }
+      else if (buf.endsWith("ember")) { buf = ""; embers(40); note(196, 0, 0.1, 2.6); }
+    }
+  });
+
+  /* ── for whoever opens the console ──
+     Every developer looks. It costs nothing to leave something there. */
+  try {
+    console.log(
+      "%cRISE%c  impacting our world, made easy\n\n" +
+      "Built by Neil and Rayan Mekouar.\n" +
+      "Since you are already in here: type rise, or piano, or ember.\n" +
+      "The Konami code does something louder.\n",
+      "font:700 28px ui-serif,Georgia,serif;color:#D6560C",
+      "font:13px ui-monospace,monospace;color:#8a8178"
+    );
+  } catch (e) {}
+})();
+
+function bootRISE() {
+  try {
+    window.ReactDOM.createRoot(document.getElementById("root")).render(window.React.createElement(AppWithBoundary, null));
+  } catch (e) {
+    var el = document.getElementById("rise-boot-error");
+    if (el) {
+      el.style.display = "block";
+      el.textContent = "Something went wrong starting the app: " + (e && e.message ? e.message : e);
+    }
+  }
+}
+if (window.React && window.ReactDOM) {
+  bootRISE();
+} else {
+  var need = [];
+  if (!window.React) need.push("https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js");
+  if (!window.ReactDOM) need.push("https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js");
+  var loaded = 0,
+    done = function () {
+      if (++loaded >= need.length) {
+        if (window.React && window.ReactDOM) bootRISE();else fail();
+      }
+    },
+    fail = function () {
+      var el = document.getElementById("rise-boot-error");
+      if (el) el.style.display = "block";
+    };
+  need.forEach(function (src) {
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = done;
+    s.onerror = done;
+    document.head.appendChild(s);
+  });
+  setTimeout(function () {
+    if (!(window.React && window.ReactDOM)) fail();
+  }, 8000);
+}
