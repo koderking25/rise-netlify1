@@ -1162,6 +1162,85 @@ React.createElement("style", null, `
     .rm *, .rm *::before, .rm *::after { animation:none !important; transition:none !important; }
     @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
 
+    /* ── The hidden layer ──
+       Styles for things most visitors will never see. Every one of them
+       is inert until a key sequence builds it, and the blanket
+       reduced-motion rule directly above already stops all of it moving
+       for anyone who asked their system for stillness, so none of these
+       rules needs to repeat that guard. */
+
+    .rise-ember-layer {
+      position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+      overflow: hidden;
+    }
+    .rise-ember {
+      position: absolute; bottom: -12px;
+      width: var(--sz, 5px); height: var(--sz, 5px);
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #FFD9A8, var(--fire-light, #F97316) 55%, rgba(214,86,12,0) 72%);
+      animation: riseEmber 2.6s cubic-bezier(.25,.6,.35,1) forwards;
+      will-change: transform, opacity;
+    }
+    @keyframes riseEmber {
+      0%   { transform: translate3d(0,0,0) scale(.5); opacity: 0; }
+      12%  { opacity: 1; }
+      70%  { opacity: .85; }
+      100% { transform: translate3d(var(--dx,0), -102vh, 0) scale(1.15); opacity: 0; }
+    }
+
+    /* The Konami reward: the page itself warms for a moment. Inset so it
+       never adds a scrollbar, which a box-shadow on body otherwise can. */
+    .rise-glow::after {
+      content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9997;
+      box-shadow: inset 0 0 140px 20px rgba(214,86,12,.28);
+      animation: riseGlow 2.6s ease-out forwards;
+    }
+    @keyframes riseGlow { 0%,100% { opacity: 0; } 18%,62% { opacity: 1; } }
+
+    .rise-piano {
+      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+      z-index: 9999; display: flex; flex-direction: column; align-items: center; gap: 7px;
+      animation: fadeUp .34s cubic-bezier(.2,.7,.3,1) both;
+    }
+    .rise-piano-keys {
+      display: flex; gap: 3px; padding: 9px;
+      background: var(--surface, #fff);
+      border: 1px solid var(--ink-5, rgba(0,0,0,.08));
+      border-radius: 13px;
+      box-shadow: 0 16px 44px rgba(0,0,0,.2);
+      max-width: 94vw;
+    }
+    .rise-key {
+      width: 40px; height: 92px; flex: 0 1 40px;
+      border: 1px solid var(--ink-5, rgba(0,0,0,.1));
+      border-radius: 4px 4px 7px 7px;
+      background: linear-gradient(180deg, #fff, #f2efe9);
+      color: #b6ada2; cursor: pointer;
+      font: 600 10px/1 ui-monospace, monospace;
+      display: flex; align-items: flex-end; justify-content: center; padding-bottom: 9px;
+      transition: transform .07s ease, background .12s ease, color .12s ease;
+    }
+    .rise-key:hover { background: linear-gradient(180deg, #fff, #ffe9d8); }
+    .rise-key.hit {
+      background: linear-gradient(180deg, #FFD9A8, var(--fire-light, #F97316));
+      color: #fff; transform: translateY(3px) scaleY(.97);
+    }
+    .rise-piano-hint {
+      font: 500 10.5px/1 ui-monospace, monospace;
+      color: var(--muted, #8a8178); letter-spacing: .04em; opacity: .75;
+    }
+    @media (max-width: 420px) { .rise-key { width: 32px; height: 76px; flex-basis: 32px; } }
+
+    /* ── Refinements ──
+       Spring easing rather than linear on the two interactions that
+       happen most. The distances are unchanged; only the curve moved,
+       so nothing shifts position and nothing new appears. */
+    .press { transition: transform .13s cubic-bezier(.34,1.56,.64,1), box-shadow .15s ease; }
+    a[href] img[alt="RISE logo"], img[alt="RISE logo"] {
+      transition: transform .4s cubic-bezier(.34,1.56,.64,1);
+    }
+    header img[alt="RISE logo"]:hover { transform: translateY(-1.5px) rotate(-4deg); }
+
     button:focus-visible, a:focus-visible, select:focus-visible,
     input:focus-visible, textarea:focus-visible {
       outline: 2px solid var(--fire); outline-offset: 2px; border-radius: 4px;
@@ -15873,6 +15952,210 @@ class RiseErrorBoundary extends React.Component {
 function AppWithBoundary() {
   return /*#__PURE__*/React.createElement(RiseErrorBoundary, null, /*#__PURE__*/React.createElement(App, null));
 }
+/* ══════════════════════════════════════════════════════════════════
+   THE HIDDEN LAYER
+
+   Nothing here is load-bearing. It attaches to the document after the
+   app has mounted and touches no React state, so if any of it breaks,
+   RISE carries on exactly as before. That is deliberate: delight should
+   never be able to take down the thing it decorates.
+
+   Three rules it holds to throughout:
+
+   1. It never fires while you are typing. Every trigger checks the
+      focused element first, so writing "rise" into the search box, a
+      motivation field, or an application form does nothing at all.
+   2. It respects prefers-reduced-motion. Moving particles are skipped
+      entirely for anyone who has asked the OS for stillness. Sound and
+      the piano still work, because neither of those moves anything.
+      Inclusion is one of the four values; this is what it looks like
+      in a hundred lines of Javascript.
+   3. Audio is built on first use, never on load. Browsers suspend an
+      AudioContext created without a gesture, and building one on page
+      load costs every visitor a little memory for a joke most of them
+      will never find.
+   ══════════════════════════════════════════════════════════════════ */
+(function riseHiddenLayer() {
+  if (typeof window === "undefined" || window.__riseHidden) return;
+  window.__riseHidden = true;
+
+  var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ── a small voice ──
+     A sine with a fast attack and a long exponential decay reads as a
+     struck string rather than a beep. Two detuned partials and a touch
+     of the octave above give it enough body to sound like a toy piano,
+     which is the intent: Neil plays, so the site should be able to. */
+  var ac = null;
+  function note(freq, when, gain, dur) {
+    try {
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      if (ac.state === "suspended") ac.resume();
+      var t = ac.currentTime + (when || 0);
+      var out = ac.createGain();
+      out.gain.setValueAtTime(0.0001, t);
+      out.gain.exponentialRampToValueAtTime(gain || 0.16, t + 0.012);
+      out.gain.exponentialRampToValueAtTime(0.0001, t + (dur || 1.1));
+      out.connect(ac.destination);
+      [[1, 1], [2.01, 0.28], [3, 0.08]].forEach(function (p) {
+        var o = ac.createOscillator();
+        var g = ac.createGain();
+        o.type = "sine";
+        o.frequency.value = freq * p[0];
+        g.gain.value = p[1];
+        o.connect(g); g.connect(out);
+        o.start(t); o.stop(t + (dur || 1.1) + 0.05);
+      });
+    } catch (e) {/* no audio device, or the browser said no. Silence is fine. */}
+  }
+
+  /* ── embers ──
+     The brand is a flame and the verb is "rise", so the particle goes
+     up. Absolute-positioned, pointer-events none, and each one removes
+     itself on animationend, so nothing accumulates in the DOM. */
+  function embers(count, originX) {
+    if (still) return;
+    var layer = document.createElement("div");
+    layer.className = "rise-ember-layer";
+    document.body.appendChild(layer);
+    for (var i = 0; i < count; i++) {
+      var e = document.createElement("span");
+      e.className = "rise-ember";
+      var x = originX == null ? Math.random() * 100 : originX + (Math.random() * 30 - 15);
+      e.style.left = Math.max(0, Math.min(100, x)) + "vw";
+      e.style.setProperty("--dx", (Math.random() * 90 - 45) + "px");
+      e.style.setProperty("--sz", (3 + Math.random() * 6).toFixed(1) + "px");
+      e.style.animationDelay = (Math.random() * 0.5).toFixed(2) + "s";
+      e.style.animationDuration = (2.1 + Math.random() * 1.6).toFixed(2) + "s";
+      layer.appendChild(e);
+    }
+    setTimeout(function () { layer.remove(); }, 4600);
+  }
+
+  /* ── typing, but only when you are not ──
+     contentEditable is checked as well as tag name: the draft-email box
+     and anything rich-text would otherwise swallow a student's letters
+     into an easter egg. */
+  function typingSomewhereReal() {
+    var el = document.activeElement;
+    if (!el) return false;
+    var tag = (el.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+  }
+
+  var buf = "";
+  var KONAMI = "ArrowUp,ArrowUp,ArrowDown,ArrowDown,ArrowLeft,ArrowRight,ArrowLeft,ArrowRight,b,a";
+  var keys = [];
+
+  /* ── the wordmark answers to its own name ──
+     Type r-i-s-e and the four letters light in turn over a rising
+     figure. A major pentatonic climb, because it has no semitones in it
+     and therefore cannot sound wrong over anything. */
+  function riseFanfare() {
+    var F = [293.66, 349.23, 440.0, 587.33]; // D4 F4 A4 D5
+    F.forEach(function (f, i) { note(f, i * 0.13, 0.17, 1.5); });
+    embers(26);
+    var mark = document.querySelector('img[alt="RISE logo"]');
+    if (mark && !still) {
+      mark.style.transition = "transform .5s cubic-bezier(.34,1.56,.64,1)";
+      mark.style.transform = "translateY(-8px) rotate(-8deg) scale(1.12)";
+      setTimeout(function () { mark.style.transform = ""; }, 520);
+    }
+  }
+
+  /* ── the piano ──
+     Neil plays. Rayan plays violin, which is harder to fake with three
+     oscillators, so the piano it is. Eight white keys on the home row,
+     click or press, and Escape puts it away. It is the one egg that
+     rewards staying rather than just firing once. */
+  var ROW = "asdfghjk";
+  var SCALE = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+  var piano = null;
+  function togglePiano() {
+    if (piano) { piano.remove(); piano = null; return; }
+    piano = document.createElement("div");
+    piano.className = "rise-piano";
+    piano.setAttribute("role", "group");
+    piano.setAttribute("aria-label", "Hidden piano. Press the letters A through K, or Escape to close.");
+    var inner = document.createElement("div");
+    inner.className = "rise-piano-keys";
+    ROW.split("").forEach(function (ch, i) {
+      var k = document.createElement("button");
+      k.type = "button";
+      k.className = "rise-key";
+      k.dataset.k = ch;
+      k.textContent = ch.toUpperCase();
+      k.setAttribute("aria-label", "Play note " + (i + 1));
+      k.addEventListener("click", function () { strike(ch); });
+      inner.appendChild(k);
+    });
+    var hint = document.createElement("div");
+    hint.className = "rise-piano-hint";
+    hint.textContent = "for Neil and Rayan. esc to close";
+    piano.appendChild(inner);
+    piano.appendChild(hint);
+    document.body.appendChild(piano);
+  }
+  function strike(ch) {
+    var i = ROW.indexOf(ch);
+    if (i < 0) return;
+    note(SCALE[i], 0, 0.2, 1.4);
+    var k = piano && piano.querySelector('.rise-key[data-k="' + ch + '"]');
+    if (k) { k.classList.add("hit"); setTimeout(function () { k.classList.remove("hit"); }, 160); }
+    if (!still) embers(2, (i / 8) * 100 + 6);
+  }
+
+  document.addEventListener("keydown", function (ev) {
+    if (typingSomewhereReal() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+    /* isConnected, not just truthiness. If the node leaves the DOM by any
+       route other than our own close (a stray cleanup, a future re-render
+       that clears body children), the variable still points at it, and the
+       branch below would keep swallowing keystrokes into a piano nobody can
+       see: typing "rise" would silently play one note instead of firing the
+       fanfare, because "s" is a piano key. Caught in testing, where a helper
+       removed the node directly and the eggs quietly stopped working. */
+    if (piano && !piano.isConnected) piano = null;
+
+    if (piano) {
+      if (ev.key === "Escape") { piano.remove(); piano = null; return; }
+      if (ROW.indexOf(ev.key) >= 0) { strike(ev.key); return; }
+    }
+
+    keys.push(ev.key); if (keys.length > 10) keys.shift();
+    if (keys.join(",") === KONAMI) {
+      keys = [];
+      /* The full chord, then a long climb. Whoever gets here earned it. */
+      [261.63, 329.63, 392.0, 523.25].forEach(function (f) { note(f, 0, 0.13, 2.4); });
+      [587.33, 659.25, 783.99, 880.0, 1046.5].forEach(function (f, i) { note(f, 0.5 + i * 0.1, 0.12, 1.6); });
+      embers(70);
+      document.body.classList.add("rise-glow");
+      setTimeout(function () { document.body.classList.remove("rise-glow"); }, 2600);
+      return;
+    }
+
+    if (ev.key && ev.key.length === 1) {
+      buf = (buf + ev.key.toLowerCase()).slice(-8);
+      if (buf.endsWith("rise")) { buf = ""; riseFanfare(); }
+      else if (buf.endsWith("piano")) { buf = ""; togglePiano(); }
+      else if (buf.endsWith("ember")) { buf = ""; embers(40); note(196, 0, 0.1, 2.6); }
+    }
+  });
+
+  /* ── for whoever opens the console ──
+     Every developer looks. It costs nothing to leave something there. */
+  try {
+    console.log(
+      "%cRISE%c  impacting our world, made easy\n\n" +
+      "Built by Neil and Rayan Mekouar.\n" +
+      "Since you are already in here: type rise, or piano, or ember.\n" +
+      "The Konami code does something louder.\n",
+      "font:700 28px ui-serif,Georgia,serif;color:#D6560C",
+      "font:13px ui-monospace,monospace;color:#8a8178"
+    );
+  } catch (e) {}
+})();
+
 function bootRISE() {
   try {
     window.ReactDOM.createRoot(document.getElementById("root")).render(window.React.createElement(AppWithBoundary, null));
