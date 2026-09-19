@@ -149,7 +149,16 @@ export async function onRequestPost(ctx) {
       try {
         out = await callGemini(body, geminiKey, env);
       } catch (e2) {
-        return reply(502, { error: String(e2.message || e2) });
+        /* Report the Anthropic failure, not the fallback's. The fallback is the
+           understudy; when both fail, the useful fact is why the lead went
+           down. This surfaced as a live outage reading "gemini auth: 401" while
+           the actual cause was on the Anthropic call, which sent debugging in
+           precisely the wrong direction. The fallback's own error is kept as a
+           second field rather than thrown away. */
+        return reply(502, {
+          error: String(e.message || e),
+          fallbackError: String(e2.message || e2)
+        });
       }
     } else {
       return reply(502, { error: String(e.message || e) });
@@ -219,9 +228,16 @@ async function hash(s) {
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const MAX_SEARCHES_DEFAULT = 4;
+const MAX_FETCHES_DEFAULT = 5;
 
 // Sonnet pricing per million tokens; web search billed per 1k requests.
-const PRICE = { input: 3, cacheWrite: 3.75, cacheRead: 0.3, output: 15, searchPer1k: 10 };
+/* Sonnet 5 list price. These were Sonnet 4.6's numbers ($3/$15) and were never
+   updated when the model moved to Sonnet 5, so every call was billed to the
+   spend guard 50% high and DAILY_BUDGET_USD tripped a third early. Cache write
+   is 1.25x input, cache read 0.1x. Web fetch has no per-use fee; its cost is
+   the page content it pulls into context, which is why max_content_tokens
+   below is the real dial for it. */
+const PRICE = { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, searchPer1k: 10 };
 
 function estimateCost(u) {
   if (!u) return 0;
@@ -235,15 +251,49 @@ function estimateCost(u) {
   );
 }
 
+/* A thinking request that runs out of output budget is the exact failure note 1
+   recorded: full price, nothing usable. Rather than forbid thinking to avoid
+   it, notice it and take the answer without thinking, once. The retry is
+   cheaper than the attempt that failed and the costs of both are reported, so
+   the spend guard still sees the true total rather than only the second try. */
 async function callAnthropic(body, key, env) {
+  const first = await callAnthropicOnce(body, key, env);
+  if (!first.truncated || !body.think) return first;
+
+  const second = await callAnthropicOnce({ ...body, think: false }, key, env);
+  second.cost = Number(((first.cost || 0) + (second.cost || 0)).toFixed(4));
+  second.retriedWithoutThinking = true;
+  return second;
+}
+
+async function callAnthropicOnce(body, key, env) {
   const MAX_SEARCHES = Number((env && env.MAX_SEARCHES) || MAX_SEARCHES_DEFAULT);
   const req = {
     model: body.model || "claude-sonnet-5",
     max_tokens: Math.min(body.max_tokens || 1800, 8192),
-    messages: body.messages,
-    // See note 1 above. Never remove without re-measuring tool-call reliability.
-    thinking: { type: "disabled" }
+    messages: body.messages
   };
+
+  /* Note 1 above recorded that thinking had to be off: reasoning ate the output
+     budget and the answer was truncated before the model reached its final tool
+     call, so a request cost full price and returned nothing.
+
+     That measurement was real, but the cause was not thinking itself. Thinking
+     tokens are drawn from max_tokens, and max_tokens was 1800. Any reasoning at
+     all crowded out the answer. The note was written before `effort` existed,
+     when the only dial was a fixed token budget.
+
+     Effort is that dial now, so thinking is opt-in per call and arrives with
+     room to land: a thinking request is floored at 6000 output tokens. Low
+     effort is the default because most searches are routine and the depth is
+     not worth paying for. The failure the note describes is guarded against
+     directly below, where a truncated thinking response is retried once
+     without thinking rather than billed for nothing. */
+  if (body.think) {
+    req.thinking = { type: "adaptive" };
+    req.output_config = { effort: body.effort || "low" };
+    req.max_tokens = Math.max(req.max_tokens, 6000);
+  }
 
   // Cache the system prompt: it's identical across every call in a search.
   if (body.system) {
@@ -264,7 +314,9 @@ async function callAnthropic(body, key, env) {
   // listings rather than the largest city that matches the words.
   if (body.search) {
     const s = {
-      type: "web_search_20250305",
+      // The 2026-02-09 variant filters results before they reach context, so a
+      // search costs fewer input tokens than the 2025-03-05 one it replaces.
+      type: "web_search_20260209",
       name: "web_search",
       max_uses: Math.min(Number(body.search.maxUses) || MAX_SEARCHES, MAX_SEARCHES)
     };
@@ -277,6 +329,30 @@ async function callAnthropic(body, key, env) {
       };
     }
     tools.push(s);
+
+    /* Web search returns snippets. That is enough to name an organization and
+       no more, which is why the matcher could only ever hand a student a
+       homepage and an instruction to go looking for the volunteer page
+       themselves. Fetch lets the model open the page it found, read the real
+       navigation, and follow "Volunteer" or "Get Involved" through to the
+       application form — including when a charity hands its intake to a
+       third-party portal, which small food banks and libraries routinely do.
+
+       It only fetches URLs already in the conversation, so it cannot wander:
+       search finds the door, fetch walks through it.
+
+       max_content_tokens is the spend dial. A charity volunteer page is small;
+       6000 tokens is a whole page with room to spare, and it stops one
+       accidentally enormous page from costing more than the entire search. */
+    if (body.fetch !== false) {
+      tools.push({
+        type: "web_fetch_20260209",
+        name: "web_fetch",
+        max_uses: Math.min(Number(body.fetchUses) || MAX_FETCHES_DEFAULT, MAX_FETCHES_DEFAULT),
+        max_content_tokens: 6000,
+        citations: { enabled: true }
+      });
+    }
   }
 
   // Structured output. Not forced when web search is present — forcing the tool
@@ -317,7 +393,8 @@ async function callAnthropic(body, key, env) {
     stop_reason: data.stop_reason,
     usage: data.usage,
     cost: Number(estimateCost(data.usage).toFixed(4)),
-    searches: (data.usage && data.usage.server_tool_use && data.usage.server_tool_use.web_search_requests) || 0
+    searches: (data.usage && data.usage.server_tool_use && data.usage.server_tool_use.web_search_requests) || 0,
+    fetches: (data.usage && data.usage.server_tool_use && data.usage.server_tool_use.web_fetch_requests) || 0
   };
 
   const tool = (data.content || []).find(c => c.type === "tool_use" && c.name === "emit");
@@ -333,11 +410,13 @@ async function callAnthropic(body, key, env) {
         out.parsed = JSON.parse(m[0]);
       } catch (e) {}
     }
-    // stop_reason "max_tokens" means we paid and got nothing usable — worth
-    // surfacing so it shows up as a real failure rather than empty results.
-    if (!out.parsed && data.stop_reason === "max_tokens") {
-      out.truncated = true;
-    }
+  }
+  /* Truncation is judged outside the schema branch on purpose. It was only set
+     when a schema was asked for, so a thinking request that ran out of budget
+     mid-sentence looked like a perfectly good short answer, and the retry above
+     would never fire for the plain-prose calls that need it most. */
+  if (!out.parsed && data.stop_reason === "max_tokens") {
+    out.truncated = true;
   }
   return out;
 }
@@ -347,6 +426,22 @@ function anthropicSources(data) {
   const out = [];
   const seen = new Set();
   for (const block of data.content || []) {
+    /* Fetched pages are sources too. Without this the citation chips showed the
+       search hits but not the volunteer page the model actually opened and read
+       to find the form, which is the one link a student most wants to click. */
+    if (block.type === "web_fetch_tool_result") {
+      const r = block.content;
+      const url = r && (r.url || (r.document && r.document.source && r.document.source.url));
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        /* Key is `uri`, matching the search branch below. They were `url` and
+           `uri` respectively at first, so fetched pages silently failed to
+           render as citation chips: the object was there, the field the UI
+           reads was not. */
+        out.push({ uri: url, title: (r && r.document && r.document.title) || url, fetched: true });
+      }
+      continue;
+    }
     const results = block.type === "web_search_tool_result" ? block.content || [] : [];
     for (const r of results) {
       if (!r.url || seen.has(r.url)) continue;
