@@ -18,7 +18,17 @@
    ══════════════════════════════════════════════════════════════════ */
 
 const CACHE_TTL = 1800; // seconds — personalised responses
-const SHARED_TTL = 6 * 3600; // cohort discovery: postings don't churn hourly
+/* Cohort discovery is cached for a full day, up from six hours.
+   "What volunteer roles exist for music in Brantford" has one answer for
+   every student in that town, and a deep run now costs around 60 cents:
+   four searches, twelve page fetches, and the reading of all of them. At six
+   hours a school class spread across an afternoon and evening paid for it
+   twice. Volunteer postings do not turn over between breakfast and bedtime,
+   and the shared pass is deliberately impersonal, so the only thing a longer
+   window costs is freshness measured in hours on listings that change over
+   weeks. It is the single largest cost lever in the app: one paid run
+   serving thirty students instead of one. */
+const SHARED_TTL = 24 * 3600;
 const MAX_TTL = 24 * 3600;
 const RATE_MAX = 40; // requests per IP
 const RATE_WINDOW = 60 * 1000;
@@ -266,8 +276,21 @@ async function hash(s) {
       ephemeral, so repeat calls read it at a tenth of the input price. */
 
 const ANTHROPIC_VERSION = "2023-06-01";
-const MAX_SEARCHES_DEFAULT = 4;
-const MAX_FETCHES_DEFAULT = 5;
+/* Ceilings, not targets. The model uses what it needs and stops.
+
+   Searches were capped at 4 and fetches at 5, which was enough to name five
+   organizations and open one or two of them. Reaching an application form
+   costs two or three fetches per organization on its own: the site, its
+   volunteer page, and usually an outside portal. Ten results with a real form
+   each cannot fit in five.
+
+   Search is billed per request and fetch is billed as the page content it
+   pulls into context, so both are real money. What makes raising them
+   affordable is that the pass which uses them is cohort-cached: one run
+   answers "what exists for music in Brantford" for every student who asks,
+   and the personal work happens downstream on a few thousand tokens. */
+const MAX_SEARCHES_DEFAULT = 8;
+const MAX_FETCHES_DEFAULT = 14;
 
 // Sonnet pricing per million tokens; web search billed per 1k requests.
 /* Sonnet 5 list price. These were Sonnet 4.6's numbers ($3/$15) and were never
@@ -276,17 +299,39 @@ const MAX_FETCHES_DEFAULT = 5;
    is 1.25x input, cache read 0.1x. Web fetch has no per-use fee; its cost is
    the page content it pulls into context, which is why max_content_tokens
    below is the real dial for it. */
-const PRICE = { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, searchPer1k: 10 };
+const PRICE_BY_MODEL = {
+  "claude-sonnet-5": { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 },
+  "claude-opus-5":   { input: 5, cacheWrite: 6.25, cacheRead: 0.5, output: 25 },
+  "claude-haiku-4-5": { input: 1, cacheWrite: 1.25, cacheRead: 0.1, output: 5 }
+};
+/* Sonnet's numbers are the fallback, because it is what an unrecognised model
+   is most likely to be here and guessing low on an unknown model is the wrong
+   way to be wrong: the spend guard would let it run longer than intended. */
+const PRICE = PRICE_BY_MODEL["claude-sonnet-5"];
+const SEARCH_PER_1K = 10;
 
-function estimateCost(u) {
+function priceFor(model) {
+  const m = String(model || "");
+  for (const key of Object.keys(PRICE_BY_MODEL)) if (m.startsWith(key)) return PRICE_BY_MODEL[key];
+  return PRICE;
+}
+
+/* Priced per model. The app now runs two: Sonnet reads the web, Opus judges
+   what it found. Opus costs 2.5x Sonnet, so charging every call at Sonnet
+   rates billed the spend guard roughly 40% of what a judging call actually
+   costs, which is exactly the direction you do not want a budget to be wrong
+   in. The model is taken from the response rather than the request, so a
+   server-side substitution is priced as what actually ran. */
+function estimateCost(u, model) {
   if (!u) return 0;
+  const P = priceFor(model);
   const st = u.server_tool_use || {};
   return (
-    (u.input_tokens || 0) * PRICE.input / 1e6 +
-    (u.cache_creation_input_tokens || 0) * PRICE.cacheWrite / 1e6 +
-    (u.cache_read_input_tokens || 0) * PRICE.cacheRead / 1e6 +
-    (u.output_tokens || 0) * PRICE.output / 1e6 +
-    (st.web_search_requests || 0) * PRICE.searchPer1k / 1000
+    (u.input_tokens || 0) * P.input / 1e6 +
+    (u.cache_creation_input_tokens || 0) * P.cacheWrite / 1e6 +
+    (u.cache_read_input_tokens || 0) * P.cacheRead / 1e6 +
+    (u.output_tokens || 0) * P.output / 1e6 +
+    (st.web_search_requests || 0) * SEARCH_PER_1K / 1000
   );
 }
 
@@ -305,11 +350,87 @@ async function callAnthropic(body, key, env) {
   return second;
 }
 
+/* Rebuilds a Messages response from the event stream.
+
+   Content blocks arrive as a start event, zero or more deltas, and a stop.
+   Text arrives as text_delta, tool arguments as input_json_delta fragments
+   that only parse once concatenated, and server tool results (web search, web
+   fetch) arrive whole in the start event. Usage is split: input tokens come
+   with message_start, output tokens with message_delta at the end. */
+async function readAnthropicStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const msg = { content: [], usage: {} };
+  const partialJson = {};
+
+  const handle = (evt) => {
+    switch (evt.type) {
+      case "message_start":
+        Object.assign(msg, evt.message || {}, { content: [] });
+        break;
+      case "content_block_start":
+        msg.content[evt.index] = JSON.parse(JSON.stringify(evt.content_block || {}));
+        if (msg.content[evt.index].type === "tool_use") partialJson[evt.index] = "";
+        break;
+      case "content_block_delta": {
+        const b = msg.content[evt.index]; const d = evt.delta || {};
+        if (!b) break;
+        if (d.type === "text_delta") b.text = (b.text || "") + d.text;
+        else if (d.type === "thinking_delta") b.thinking = (b.thinking || "") + d.thinking;
+        else if (d.type === "input_json_delta") partialJson[evt.index] = (partialJson[evt.index] || "") + d.partial_json;
+        break;
+      }
+      case "content_block_stop": {
+        const raw = partialJson[evt.index];
+        if (raw != null && msg.content[evt.index]) {
+          try { msg.content[evt.index].input = raw ? JSON.parse(raw) : {}; } catch (e) {}
+          delete partialJson[evt.index];
+        }
+        break;
+      }
+      case "message_delta":
+        Object.assign(msg, evt.delta || {});
+        Object.assign(msg.usage, evt.usage || {});
+        break;
+      case "error":
+        throw Object.assign(new Error("anthropic stream: " + JSON.stringify(evt.error).slice(0, 300)), { status: 502 });
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let evt; try { evt = JSON.parse(payload); } catch (e) { continue; }
+      handle(evt);
+    }
+  }
+  msg.content = msg.content.filter(Boolean);
+  return msg;
+}
+
 async function callAnthropicOnce(body, key, env) {
   const MAX_SEARCHES = Number((env && env.MAX_SEARCHES) || MAX_SEARCHES_DEFAULT);
   const req = {
     model: body.model || "claude-sonnet-5",
-    max_tokens: Math.min(body.max_tokens || 1800, 8192),
+    /* 8192 was the ceiling while calls were non-streaming, where a large
+       max_tokens risks an HTTP timeout. Every call streams now, so the cap can
+       be what the work actually needs.
+
+       It needs a lot. A deep search spends output on thinking, on narration
+       between tool calls, and only then on the emit arguments. Measured: one
+       run used 22,889 output tokens and was cut off before emit could be
+       filled, returning nothing after 345 seconds and 57 cents. The ceiling
+       was the whole reason. */
+    max_tokens: Math.min(body.max_tokens || 1800, 32000),
     messages: body.messages
   };
 
@@ -407,6 +528,22 @@ async function callAnthropicOnce(body, key, env) {
   }
   if (tools.length) req.tools = tools;
 
+  /* Streamed, always, then reassembled here into the same object a
+     non-streamed call returns.
+
+     A deep search is slow by nature: seven web searches and up to fourteen
+     page fetches, each one a real round trip on Anthropic's side. Held open
+     as a single non-streaming request that reliably died at roughly 100
+     seconds with a 524, after doing and billing all of the work. Measured:
+     125 seconds to a timeout, full price, nothing returned.
+
+     Streaming keeps bytes moving so nothing upstream decides the connection
+     is dead. The browser contract is unchanged, because the stream is
+     consumed here and only the finished result is sent on. That keeps the
+     client simple and, more importantly, keeps the link verification below
+     possible: it needs the whole answer before it can check anything. */
+  req.stream = true;
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -422,7 +559,7 @@ async function callAnthropicOnce(body, key, env) {
     err.status = res.status;
     throw err;
   }
-  const data = await res.json();
+  const data = await readAnthropicStream(res);
 
   const out = {
     content: data.content || [],
@@ -431,14 +568,21 @@ async function callAnthropicOnce(body, key, env) {
     grounded: !!body.search,
     stop_reason: data.stop_reason,
     usage: data.usage,
-    cost: Number(estimateCost(data.usage).toFixed(4)),
+    cost: Number(estimateCost(data.usage, data.model).toFixed(4)),
     searches: (data.usage && data.usage.server_tool_use && data.usage.server_tool_use.web_search_requests) || 0,
     fetches: (data.usage && data.usage.server_tool_use && data.usage.server_tool_use.web_fetch_requests) || 0
   };
 
   const tool = (data.content || []).find(c => c.type === "tool_use" && c.name === "emit");
   if (tool) {
-    out.parsed = (tool.input && tool.input.items) || tool.input;
+    const got = (tool.input && tool.input.items) || tool.input;
+    /* An emit whose arguments were cut off mid-stream arrives as {}, which is
+       truthy, so it counted as a successful parse and the caller was handed
+       zero results as though that were the honest answer. A run that cost
+       real money and produced nothing has to be visible as a failure, not
+       reported as an empty search. */
+    const empty = got == null || (Array.isArray(got) ? got.length === 0 : Object.keys(got).length === 0);
+    if (!empty) out.parsed = got;
   } else if (body.schema) {
     // The model answered in prose instead of calling the tool. Rare, but it
     // costs the same either way — salvage it rather than binning the spend.

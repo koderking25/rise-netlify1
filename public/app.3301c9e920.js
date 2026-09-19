@@ -2274,8 +2274,28 @@ function onAIHealth(fn) {
 // map to one of these; the first that answers wins and is remembered.
 const PROXY_PATHS = ["/api/ai-search", "/.netlify/functions/ai-search"];
 
+/* Two models, chosen by where the tokens are rather than by how important the
+   call feels.
+
+   Discovery reads the web. Search results and fetched pages make it by far
+   the largest input in the app, tens of thousands of tokens per run, and the
+   work is retrieval: find the postings, follow the links, report what the
+   page says. Sonnet does that well and costs $2 per million in where Opus
+   costs $5. It is also the pass that gets cohort-cached, so one run serves
+   every student in that city and category.
+
+   Judging is the opposite shape. The input is a short list of candidates
+   already found, a few thousand tokens, and the work is entirely judgement:
+   does this role actually use what this student said they can do, can they
+   physically get to it, is the organization credible. That is where a better
+   model changes the answer, and where it is cheap to use one.
+
+   So the expensive model runs where the tokens are few and the thinking
+   matters, and the cheap one runs where the tokens are many and the thinking
+   does not. */
 const MODELS = {
   smart: "claude-sonnet-5",
+  deep: "claude-opus-5",
   fast: "claude-haiku-4-5-20251001",
   gemini: "gemini-3.5-flash"
 };
@@ -4398,12 +4418,24 @@ Rules you never break:
 - You never invent an email address, a phone number, a program name, or a URL path.
 - You would rather return three real matches than five padded ones.
 
-How you find the way in. You have web_fetch as well as web_search, so do not stop at a homepage and tell the student to go looking. Search finds the door; fetch walks through it:
-- Open the organization's site and read its real navigation. Follow Volunteer, Get Involved, Join Us, Opportunities, or Careers until you reach the page a person actually applies on.
-- Many small charities hand their intake to an outside portal such as BetterImpact, Volunteer Connector, Better Together, Galaxy Digital, or a Google Form. Follow it out and give that url, because that is where the student really applies.
-- The organization's operating name is often not its legal name. A city food bank may run under a parent society with a different website. Follow the name the site itself uses.
-- Open the application page before you recommend it. If it 404s or asks for a login you cannot see past, say so rather than passing on a dead link.
-- Read the page for what actually gates a teenager: minimum age, police or vulnerable sector check, references, training, shift length, and application deadlines. A 16 plus rule or a vulnerable sector check is the single most useful thing you can tell a 14 to 18 year old, so report it plainly and never hide it to make a match look better.
+How you work. You have two tools with two separate budgets: web_search finds organizations, web_fetch opens their pages. Everything below was learned by running this and watching it fail.
+
+- Spend searches sparingly. Two or three broad ones name the organizations in a town. Then spend every remaining fetch opening those sites. Fetching is where the value is.
+- The budgets are counted separately. When search reports a limit, that is your cue to start fetching, not to stop working. Only stop when fetch is exhausted too. A run that burned its searches and then gave up returned nothing after four minutes.
+- Never retry a tool that just refused you, and never say you will continue in a later turn. There is no later turn.
+- DO NOT NARRATE. Between tool calls, say nothing: no summaries, no plans, no closing report. Every word of prose is budget taken from the final call. One run wrote 22,889 tokens of commentary and was cut off before it could return a single result.
+- Call emit exactly once, at the end, whatever happened. Ten good roles is a success. Nothing is a total failure, and a partial answer delivered beats a perfect one that never arrives.
+
+Finding the way in. Never stop at a homepage and tell a student to go looking. Follow Volunteer, Get Involved or Join Us through to where a person actually applies, including out to portals like BetterImpact, Volunteer Connector or a Google Form. Small charities routinely hand their intake to one, and the operating name is often not the legal name: a city food bank may run under a parent society with a different site.
+
+- applyLink is the most specific page you actually opened that a student can act on. In order: the application form, then the portal it sends people to, then the organization's Volunteer page. Any of those three is good. A homepage is not, and a page you did not open is not.
+- Record it the moment you open something worth recording. Do not reach the end and try to remember ten urls.
+- Getting a student to the right page is the single most valuable thing you do. A result with a real applyLink is worth three without one.
+
+What you may state as fact, and this is absolute:
+- minAge and screening describe what you READ ON A PAGE. Nothing else.
+- If you did not open a page stating the minimum age, omit minAge. Do not infer it from what similar organizations usually ask.
+- The words likely, typically, usually, probably, may require and common for are forbidden in those fields. A guessed age floor is worse than a missing one: it turns a 14 year old away at a door that would have taken them, or sends one to a door that will not.
 - Say which url is the application itself and which is background.
 - You write plainly. No exclamation marks, no hype words (amazing, incredible, perfect, dream, passionate), no jokes, no preamble. Never use the words delve, leverage, or furthermore.`;
 /* Search geography, passed to the web-search tool so it looks in the right
@@ -4486,18 +4518,18 @@ async function webSearchOpps(talent, location, supText, prefs = {}, exclude = ""
     label: location
   };
   const tal = TALENTS.find(t => t.id === talent);
-  const want = opts.count || 5;
+  const want = opts.count || 9;
   const res = await apiCall({
     model: MODELS.smart,
     system: SYS_MATCH,
-    max_tokens: 3200,
+    max_tokens: 8000,
     temperature: 0.3,
     schema: OPP_SCHEMA,
     // Always hit the network: a live search that replays a cached answer is
     // not a live search.
     fresh: true,
     search: Object.assign({
-      maxUses: opts.maxUses || 4
+      maxUses: opts.maxUses || 7
     }, searchGeo(loc) || {}),
     messages: [{
       role: "user",
@@ -4521,7 +4553,7 @@ For every result set "sourceUrl" to the exact page you read it on, and "link" to
 
 Return fewer than ${want} rather than padding with roles any volunteer could do.`
     }]
-  }, 90000, 1);
+  }, 210000, 1);
   return tagSources(extractJSON(res), res, "web");
 }
 
@@ -4564,13 +4596,13 @@ async function sharedDiscovery(talent, location, opts = {}) {
   const res = await apiCall({
     model: MODELS.smart,
     system: SYS_MATCH,
-    max_tokens: 3600,
+    max_tokens: 24000,
     temperature: 0.3,
     schema: OPP_SCHEMA,
     // Shared identity. Must stay free of anything personal — see above.
     cacheKey: `disc:v1:${loc.id}:${talent}:${angle}:${remote ? "r" : "l"}`,
     search: Object.assign({
-      maxUses: opts.maxUses || 4
+      maxUses: opts.maxUses || 7
     }, searchGeo(loc) || {}),
     messages: [{
       role: "user",
@@ -4599,7 +4631,7 @@ For every result set "sourceUrl" to the exact page you read it on, and "link" to
 
 Return fewer than ${want} rather than padding with roles any volunteer could do.`
     }]
-  }, 90000, 1);
+  }, 210000, 1);
   return tagSources(extractJSON(res), res, "web");
 }
 
@@ -4633,7 +4665,7 @@ ${profileBlock(loc, tal, supText, prefs)}
 ${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}
 Set sourceUrl to the page you read. Return 3-4 results, or fewer if that's what is genuinely there. Then call emit once.`
     }]
-  }, 90000, 1);
+  }, 210000, 1);
   return tagSources(extractJSON(res), res, "web");
 }
 
@@ -4763,9 +4795,14 @@ async function judgeMatches(candidates, loc, tal, supText, prefs) {
     what they'd do: ${(o.role || o.desc || "").slice(0, 260)}
     commitment: ${o.commitment || o.hours || "unstated"} | where: ${o.where || "unstated"} | requirements: ${o.requirements || "none listed"}`).join("\n");
   const res = await apiCall({
-    model: MODELS.smart,
+    model: MODELS.deep,
     system: SYS_MATCH,
-    max_tokens: 3000,
+    max_tokens: 6000,
+    /* Thinking on, at high effort. This call decides what a student is
+       actually shown, and it is the cheapest place in the pipeline to buy
+       care: no web content comes in here, only a short candidate list. */
+    think: true,
+    effort: "high",
     temperature: 0.1,
     schema: JUDGE_SCHEMA,
     messages: [{
@@ -6215,7 +6252,6 @@ function ResultCardBase({
 }) {
   const [copied, setCopied] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
-  const [showDraft, setShowDraft] = useState(false);
   const [showApply, setShowApply] = useState(false);
   const verdict = verdictOf(opp);
   async function share() {
@@ -6744,28 +6780,6 @@ function ResultCardBase({
       flexShrink: 0
     }
   }, [opp.minAge ? opp.minAge + "+" : null, opp.screening || null].filter(Boolean).join("  \u00b7  ")),
-  // Writing the first email is the step most students stall on, so it gets a
-  // button of its own rather than living in a menu.
-  /*#__PURE__*/
-  React.createElement("button", {
-    onClick: () => setShowDraft(true),
-    style: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "9px 14px",
-      background: "var(--ember)",
-      color: "var(--fire)",
-      border: "1.5px solid var(--ember-bd)",
-      borderRadius: 8,
-      fontSize: 12.5,
-      fontWeight: 600,
-      cursor: "pointer",
-      fontFamily: "inherit"
-    }
-  }, /*#__PURE__*/React.createElement(Sparkles, {
-    size: 12
-  }), " Draft my email"),
   /* Applying inside RISE exists only for RISE Verified postings, because it
      is the only case where a person has checked who is on the other end.
      Everything else still routes to the organization's own page, where the
@@ -6827,14 +6841,7 @@ function ResultCardBase({
       fontFamily: "'DM Sans', sans-serif",
       transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
     }
-  }, copied ? "Copied!" : "Share")))), showDraft && /*#__PURE__*/React.createElement(OutreachModal, {
-    opp: opp,
-    student: student || {
-      name: studentName,
-      skills: studentSkills
-    },
-    onClose: () => setShowDraft(false)
-  }), showApply && /*#__PURE__*/React.createElement(ApplyModal, {
+  }, copied ? "Copied!" : "Share")))), showApply && /*#__PURE__*/React.createElement(ApplyModal, {
     opp: opp,
     profile: student || {
       name: studentName,
@@ -8819,12 +8826,12 @@ function MatcherPage({
       const settled = await safeAllSettled([sharedDiscovery(talent, location, {
         angle: a0,
         virtualOnly: prefs.virtualOnly,
-        count: 10,
-        maxUses: 4
+        count: 14,
+        maxUses: 7
       }), sharedDiscovery(talent, location, {
         angle: (a0 + 1) % 4,
         virtualOnly: prefs.virtualOnly,
-        count: 8,
+        count: 12,
         maxUses: 3
       })]);
       const pool = [];
