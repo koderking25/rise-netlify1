@@ -15,6 +15,32 @@ main = "src/index.js"
 compatibility_date = "2026-08-04"
 compatibility_flags = ["nodejs_compat"]
 
+# The hostnames this Worker answers on.
+#
+# These are Custom Domains, not routes: `custom_domain = true` tells Cloudflare
+# the Worker IS the origin for the hostname, so Cloudflare creates the DNS
+# record and issues the certificate itself.
+#
+# This block exists because on 19 September 2026 rise4impact.org went fully
+# dark: the zone was still on Cloudflare and the registration was paid up to
+# 2027, but every DNS record at the apex had been removed, so the name did not
+# resolve at all. Nothing was wrong with the site; there was simply no longer a
+# record pointing at it. When the binding lives only in the dashboard, deleting
+# it there is silent and total, and nothing in the repo can restore it.
+#
+# Keeping it here makes `wrangler deploy` the repair: the record is recreated
+# from committed configuration rather than from memory of which dashboard
+# checkbox to tick.
+#
+# A Custom Domain matches one exact hostname. Wildcards are not supported, so
+# the apex and www each need their own entry. This must stay ABOVE [assets]:
+# TOML would otherwise read it as a key inside that table rather than a
+# top-level route list, and the Worker would deploy with no hostname at all.
+routes = [
+  { pattern = "rise4impact.org", custom_domain = true },
+  { pattern = "www.rise4impact.org", custom_domain = true }
+]
+
 [assets]
 # The app itself. Matches the repo layout: index.html and the favicons.
 directory = "./public"
