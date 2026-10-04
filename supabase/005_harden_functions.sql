@@ -65,24 +65,39 @@ alter function public.touch_updated_at()        set search_path = '';
 alter function public.enforce_named_verifier()  set search_path = '';
 alter function public.rise_display_name(text)   set search_path = '';
 
--- Previously pinned to public; tightened so pg_temp cannot be searched first
-alter function public.handle_new_user()         set search_path = '';
-alter function public.submit_opportunity(uuid)  set search_path = '';
-alter function public.withdraw_opportunity(uuid) set search_path = '';
+-- Previously pinned to public; tightened so pg_temp cannot be searched first.
+--
+-- CORRECTED 4 October. These five first got search_path = '' like the three
+-- above, which broke them: each casts to a custom enum by bare name
+-- (account_role, opportunity_status, application_status,
+-- application_availability) and an empty path cannot resolve a type any more
+-- than it can resolve a table. handle_new_user fails inside the signup
+-- trigger, so Google sign-in returned error_code=unexpected_failure with no
+-- hint of the cause. I had checked these bodies for bare TABLE names, which
+-- they do not have, and not for bare TYPE names, which they do.
+--
+-- pg_catalog, public, pg_temp keeps the types resolvable and still names
+-- pg_temp last, which is the property that mattered: it is searched first for
+-- relation and type names when unlisted, and any signed-in user can create
+-- temporary objects there.
+alter function public.handle_new_user()          set search_path = pg_catalog, public, pg_temp;
+alter function public.submit_opportunity(uuid)   set search_path = pg_catalog, public, pg_temp;
+alter function public.withdraw_opportunity(uuid) set search_path = pg_catalog, public, pg_temp;
 -- Seven parameters, and the second is the enum rather than text. An alter
 -- function call is matched by exact argument types, so a near-miss here fails
 -- the migration rather than silently skipping; the signature is copied from
 -- the declaration in 004 rather than remembered.
 alter function public.submit_application(
   uuid, public.application_availability, text, text, text, boolean, text[]
-) set search_path = '';
-alter function public.withdraw_application(uuid) set search_path = '';
+) set search_path = pg_catalog, public, pg_temp;
+alter function public.withdraw_application(uuid) set search_path = pg_catalog, public, pg_temp;
 
 
 -- ── Check it worked ─────────────────────────────────────────────────────
 --
--- Expect eight rows, every one showing search_path=. An empty config, or a
--- row showing public, means that function did not take.
+-- Expect eight rows. The three helpers show search_path= (the empty path);
+-- the five that cast to custom enums show pg_catalog, public, pg_temp. A row
+-- showing just "public", or (NOT SET), means that function did not take.
 
 select
   p.proname                                        as function,
