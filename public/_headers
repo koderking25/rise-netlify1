@@ -9,6 +9,13 @@
 /react-dom.*.js
   Cache-Control: public, max-age=31536000, immutable
 
+# The logo and the founder photos. These carry no hash in the name, because
+# swapping a founder photo should be dropping a file in, not renaming one and
+# chasing the reference through the bundle. A day is the trade: a returning
+# visitor re-downloads none of it, and a replaced photo is live by tomorrow.
+/img/*
+  Cache-Control: public, max-age=86400
+
 # The HTML is the one file that must never be cached hard: it is what points at
 # the current bundle, so a stale copy would pin a visitor to an old app forever.
 /
