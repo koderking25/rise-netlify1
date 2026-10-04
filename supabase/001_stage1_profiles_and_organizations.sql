@@ -176,6 +176,16 @@ revoke insert (verification_status, verified_at, verified_by, review_notes)
 revoke update (verification_status, verified_at, verified_by, review_notes)
   on public.organizations from anon, authenticated;
 
+-- handle_new_user is a trigger, and only a trigger. PostgREST publishes every
+-- public-schema function as an RPC endpoint and Supabase grants EXECUTE to
+-- anon and authenticated by default, which left the one function that assigns
+-- account roles, running as SECURITY DEFINER, callable by anyone at
+-- /rest/v1/rpc/handle_new_user.
+--
+-- Revoking EXECUTE removes that endpoint and changes nothing about signup: a
+-- trigger resolves privileges through its owner, not the session role.
+revoke execute on function public.handle_new_user() from anon, authenticated;
+
 -- service_role bypasses RLS and column grants; that key stays server-side.
 grant all on public.profiles      to service_role;
 grant all on public.organizations to service_role;

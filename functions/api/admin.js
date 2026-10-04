@@ -88,13 +88,13 @@ const ACTIONS = new Set([
   "unpublish-opportunity"
 ]);
 
-export async function onRequestOptions({ env }) {
-  return new Response(null, { status: 204, headers: cors(env) });
+export async function onRequestOptions({ env, request }) {
+  return new Response(null, { status: 204, headers: cors(env, request) });
 }
 
 export async function onRequestPost(ctx) {
   const { request, env } = ctx;
-  const H = cors(env);
+  const H = cors(env, request);
   const reply = (code, obj) =>
     new Response(JSON.stringify(obj), {
       status: code,
@@ -402,11 +402,22 @@ function safeErr(message, status) {
   return e;
 }
 
-function cors(env) {
+/* One origin, matched against the list. See the note in ai-search.js: a
+   comma-separated value in this header is rejected by every browser, which
+   would stop the site calling its own admin endpoint. */
+function pickOrigin(env, request) {
+  const allowed = String((env && env.ALLOW_ORIGIN) || "").split(",").map(s => s.trim()).filter(Boolean);
+  const origin = request && request.headers ? request.headers.get("Origin") : null;
+  if (!allowed.length) return "*";
+  return origin && allowed.includes(origin) ? origin : allowed[0];
+}
+
+function cors(env, request) {
   return {
-    "Access-Control-Allow-Origin": (env && env.ALLOW_ORIGIN) || "*",
+    "Access-Control-Allow-Origin": pickOrigin(env, request),
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "POST, OPTIONS"
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Vary": "Origin"
   };
 }
 

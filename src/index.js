@@ -123,6 +123,39 @@ function harden(resp) {
 }
 
 export default {
+  /* ── Daily keep-alive ──────────────────────────────────────────────────────
+     Fired by the cron trigger in wrangler.toml. Supabase pauses Free-plan
+     projects after seven days of low activity, and a paused database fails
+     silently: sign-in stops working and nothing says why.
+
+     The query is deliberately the cheapest thing that still counts as real
+     Postgres activity: ask the REST API for zero rows of one table. It reads no
+     data, so there is nothing here to leak, and it uses the service key the
+     admin endpoint already holds rather than introducing another credential.
+
+     Failure is logged and swallowed. A keep-alive that throws would show up as
+     a scheduled-handler error with no effect on the site, and there is nothing
+     useful to do about it from in here anyway. */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      const url = env.SUPABASE_URL, key = env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!url || !key) { console.log("keep-alive: no Supabase credentials bound"); return; }
+      try {
+        const isJwt = /^ey[A-Za-z0-9_-]*\./.test(key);
+        const res = await fetch(url + "/rest/v1/profiles?select=id&limit=0", {
+          headers: {
+            apikey: key,
+            ...(isJwt ? { Authorization: "Bearer " + key } : {}),
+            Accept: "application/json"
+          }
+        });
+        console.log("keep-alive: Supabase replied " + res.status);
+      } catch (e) {
+        console.log("keep-alive failed: " + (e && e.message ? e.message : e));
+      }
+    })());
+    },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 

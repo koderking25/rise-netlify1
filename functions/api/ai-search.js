@@ -34,26 +34,74 @@ const RATE_MAX = 40; // requests per IP
 const RATE_WINDOW = 60 * 1000;
 const MAX_BODY = 60 * 1024;
 
-/* Spend guard — this proxy holds a key that bills real money on a URL anyone
-   can find. Rate limiting caps requests; this caps cost. Per isolate and
-   best-effort, but it turns an unbounded bill into a bounded one.
+/* ── Spend guard ──────────────────────────────────────────────────────────
+   This proxy holds a key that bills real money on a URL anyone can find, so
+   the cap on what it can spend is the most important thing in the file.
+
+   It used to be a module-scope object. On Workers that is one copy per
+   isolate, and Cloudflare runs many isolates across many colos, each starting
+   at zero. DAILY_BUDGET_USD=5 therefore meant five dollars per isolate per
+   day. Traffic from several countries at once got a fresh allowance in each
+   one. The old comment called it "best-effort per-isolate", which was honest
+   and was also the entire problem.
+
+   The total now lives in KV, which every isolate can see. KV is eventually
+   consistent, roughly a minute, so the cap can be overshot a little at the
+   boundary when several isolates spend at once before they see each other's
+   writes. That is a real limitation and it is still vastly better than no
+   shared state: the overshoot is bounded by a minute of traffic rather than
+   by the number of data centres Cloudflare happens to route through.
+
+   The in-memory object survives as a fallback for local development and for
+   the case where the binding is missing, so the guard degrades to its old
+   behaviour rather than vanishing.
+
    Set DAILY_BUDGET_USD=0 to disable. */
 const SPEND = { day: "", total: 0 };
-function spendToday() {
+const spendKey = () => "spend:" + new Date().toISOString().slice(0, 10);
+
+async function spendToday(env) {
   const today = new Date().toISOString().slice(0, 10);
   if (SPEND.day !== today) { SPEND.day = today; SPEND.total = 0; }
-  return SPEND.total;
+  const kv = env && env.RISE_GUARD;
+  if (!kv) return SPEND.total;
+  try {
+    const v = await kv.get(spendKey());
+    const shared = v ? Number(v) : 0;
+    /* Whichever is higher. A just-started isolate reads KV and gets the true
+       total; an isolate that has spent since its last read trusts its own
+       number until the write lands. Taking the max means a propagation delay
+       can never lower the running total. */
+    return Math.max(Number.isFinite(shared) ? shared : 0, SPEND.total);
+  } catch (e) {
+    return SPEND.total;
+  }
 }
 
-const RATE = new Map(); // best-effort per-isolate throttle
+async function addSpend(env, amount) {
+  if (!(amount > 0)) return;
+  SPEND.total += amount;
+  const kv = env && env.RISE_GUARD;
+  if (!kv) return;
+  try {
+    const v = await kv.get(spendKey());
+    const next = (v ? Number(v) || 0 : 0) + amount;
+    SPEND.total = Math.max(SPEND.total, next);
+    /* Expires itself two days out, so yesterday's key cannot linger and be
+       read as today's. Nothing has to sweep it. */
+    await kv.put(spendKey(), String(next), { expirationTtl: 172800 });
+  } catch (e) {}
+}
 
-export async function onRequestOptions({ env }) {
-  return new Response(null, { status: 204, headers: cors(env) });
+const RATE = new Map(); // fallback only; the real limiter is the binding below
+
+export async function onRequestOptions({ env, request }) {
+  return new Response(null, { status: 204, headers: corsFor(env, request) });
 }
 
 export async function onRequestPost(ctx) {
   const { request, env } = ctx;
-  const H = cors(env);
+  const H = corsFor(env, request);
   const reply = (code, obj, extra) =>
     new Response(JSON.stringify(obj), {
       status: code,
@@ -61,7 +109,7 @@ export async function onRequestPost(ctx) {
     });
 
   const ip = request.headers.get("cf-connecting-ip") || "anon";
-  if (!allow(ip)) return reply(429, { error: "Too many requests. Wait a minute." }, { "Retry-After": "60" });
+  if (!(await allow(ip, env))) return reply(429, { error: "Too many requests. Wait a minute." }, { "Retry-After": "60" });
 
   const raw = await request.text();
   if (raw.length > MAX_BODY) return reply(413, { error: "Request too large" });
@@ -83,7 +131,17 @@ export async function onRequestPost(ctx) {
     return reply(200, {
       ok: true,
       provider: anthropicKey ? "anthropic" : "gemini",
-      search: !!anthropicKey
+      search: !!anthropicKey,
+      /* Which safety bindings are actually attached. Both guards fall back to
+         per-isolate counters when a binding is missing, and that fallback is
+         silent by design so the site keeps working. Silent is exactly what
+         makes it dangerous: a spend cap that quietly reverted to per-isolate
+         looks identical from outside. This says so out loud, costs nothing,
+         and reveals no secret. */
+      guards: {
+        sharedSpend: !!(env && env.RISE_GUARD),
+        edgeRateLimit: !!(env && env.RATE_LIMITER && typeof env.RATE_LIMITER.limit === "function")
+      }
     });
   }
   // Link verification — a browser can't read cross-origin status codes, so the
@@ -137,19 +195,19 @@ export async function onRequestPost(ctx) {
   }
 
   const budget = env.DAILY_BUDGET_USD == null ? 5 : Number(env.DAILY_BUDGET_USD);
-  if (budget > 0 && spendToday() >= budget) {
+  const spentSoFar = await spendToday(env);
+  if (budget > 0 && spentSoFar >= budget) {
     return reply(429, {
       error: "Daily AI budget reached. Live matching resumes tomorrow.",
       budget,
-      spent: Number(spendToday().toFixed(4))
+      spent: Number(spentSoFar.toFixed(4))
     }, { "Retry-After": "3600" });
   }
 
   let out;
   try {
     out = anthropicKey ? await callAnthropic(body, anthropicKey, env) : await callGemini(body, geminiKey, env);
-    spendToday();
-    SPEND.total += out.cost || 0;
+    await addSpend(env, out.cost || 0);
     out.spentToday = Number(SPEND.total.toFixed(4));
   } catch (e) {
     // Transient upstream failures only. A 4xx is our bug and must stay visible
@@ -229,15 +287,45 @@ export async function onRequestPost(ctx) {
   return reply(200, out, { "X-Cache": "MISS", "X-Cache-Ttl": String(ttl) });
 }
 
-function cors(env) {
+/* ALLOW_ORIGIN holds a comma-separated list, but the header it feeds takes
+   exactly one origin. Emitting the list verbatim produces a value no browser
+   accepts, which fails shut: the site itself stops being able to call its own
+   API. So the request's Origin is matched against the list and echoed back,
+   and Vary is set because the response now differs by request header.
+
+   Unset still falls back to "*", which keeps local development working.
+
+   Worth being honest about what this buys. CORS is enforced by browsers, so
+   this stops another website spending the Anthropic budget through its
+   visitors. It does nothing about a script, which ignores CORS entirely. The
+   spend cap is the real protection; this closes the easy door. */
+function corsFor(env, request) {
+  const allowed = String((env && env.ALLOW_ORIGIN) || "").split(",").map(s => s.trim()).filter(Boolean);
+  const origin = request && request.headers ? request.headers.get("Origin") : null;
+  let value = "*";
+  if (allowed.length) value = origin && allowed.includes(origin) ? origin : allowed[0];
   return {
-    "Access-Control-Allow-Origin": (env && env.ALLOW_ORIGIN) || "*",
+    "Access-Control-Allow-Origin": value,
     "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS"
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Vary": "Origin"
   };
 }
 
-function allow(ip) {
+/* Per-IP limit, counted by Cloudflare's own rate limiter rather than by a Map
+   in this isolate. A fuzzy rate limit is what lets a fuzzy dollar cap be
+   exploited, so this is the half that has to be exact.
+
+   Falls back to the in-memory Map when the binding is absent, which keeps
+   local development and the tests working. */
+async function allow(ip, env) {
+  const limiter = env && env.RATE_LIMITER;
+  if (limiter && typeof limiter.limit === "function") {
+    try {
+      const { success } = await limiter.limit({ key: ip });
+      return success;
+    } catch (e) {/* fall through to the local counter */}
+  }
   const now = Date.now();
   const r = RATE.get(ip);
   if (!r || now > r.resetAt) {

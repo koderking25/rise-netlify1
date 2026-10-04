@@ -2,16 +2,34 @@
 
 Turn talent into impact. Youth volunteering, Canada.
 
-`public/index.html` is the whole app — one self-contained file, same as before.
-The other folders are the server pieces you deploy alongside it.
+The app is no longer one file. `public/index.html` is an 8 KB shell: it carries
+the fonts, the pre-paint theme script, and a pointer at the bundle. The actual
+application is `public/app.<hash>.js`, around 724 KB and 16,000 lines,
+precompiled from JSX rather than minified, so it stays readable.
+
+They were split because shipping the app inside the HTML meant re-downloading
+all of it on every visit, since the HTML is the one file that must never be
+cached hard. Separated, the bundle carries a content hash and is cached for a
+year while the shell stays small and fresh.
 
 ```
-public/index.html               the app  ← the only thing served publicly
-src/index.js                    Worker entry point — routes /api/ai-search
+public/index.html               the shell  ← points at the current bundle
+public/app.<hash>.js            the app itself
+public/img/                     logo and founder photos
+public/_headers                 cache rules: bundle for a year, HTML never
+build.mjs                       keeps the three references below in step
+src/index.js                    Worker entry: /api routes, CSP, keep-alive cron
 functions/api/ai-search.js      AI proxy — shared implementation
-netlify/functions/ai-search.js  AI proxy — Netlify adapter
+functions/api/admin.js          admin endpoint — holds the service-role key
+supabase/*.sql                  migrations, in order
 wrangler.toml                   Cloudflare Worker config
 ```
+
+**Run `node build.mjs` after editing the bundle.** Three things have to agree:
+the bundle's filename hash, the reference to it in `index.html`, and the CSP
+script hash in `src/index.js`. `build.mjs` recomputes all three. Edit the
+bundle without running it and the site will serve a file nobody is pointing at,
+or a page whose inline script the browser refuses.
 
 The app lives in `public/` rather than the repo root on purpose: `wrangler`
 uploads the asset directory verbatim, so anything sitting beside `index.html`

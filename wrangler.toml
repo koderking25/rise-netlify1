@@ -57,6 +57,58 @@ not_found_handling = "single-page-application"
 # the whole site closed.
 run_worker_first = true
 
+# ── Shared state for the two safety counters ──────────────────────────────
+#
+# Both guards used to live in module scope, which on Workers means one copy per
+# isolate. Cloudflare runs many isolates across many colos and starts fresh ones
+# freely, each beginning at zero. So DAILY_BUDGET_USD=5 meant five dollars per
+# isolate per day rather than five dollars a day, and the 40-per-minute rate
+# limit was 40 per isolate. Traffic arriving from several countries at once got
+# a fresh allowance in each one. The code said as much: "best-effort per-isolate
+# throttle". That was honest, and it was also the whole problem.
+#
+# KV holds the running daily spend. It is eventually consistent, roughly a
+# minute, so the cap can be overshot slightly at the boundary. That is an
+# acceptable trade for a dollar guard backed by a hard limit on the Anthropic
+# account, and it is enormously better than no shared state at all.
+[[kv_namespaces]]
+binding = "RISE_GUARD"
+id = "b7bd25e8d0d9463588240f1d2f331e19"
+
+# The per-IP limit gets Cloudflare's purpose-built rate limiter instead, which
+# counts properly at the edge. A fuzzy rate limit is what would let a fuzzy
+# dollar cap be exploited, so this is the half that needs to be exact.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 40, period = 60 }
+
+[vars]
+# Not a secret, so it lives here where it is visible in the repo rather than in
+# the secret store. Without it the CORS header falls back to "*", meaning any
+# website could call this proxy from a visitor's browser and spend the Anthropic
+# budget. Worth setting, and worth being clear that it is not the protection:
+# CORS is enforced by browsers, and anything scripted ignores it entirely. The
+# spend cap above is the protection.
+ALLOW_ORIGIN = "https://rise4impact.org,https://www.rise4impact.org"
+
+# ── Keep the database awake ───────────────────────────────────────────────
+#
+# Supabase pauses Free-plan projects after seven days of low activity, and the
+# project currently shows zero Postgres requests. A paused database does not
+# announce itself: sign-in breaks, the organization form breaks, and the first
+# anyone knows is a visitor saying the site is broken. The failure mode that
+# matters is a school opening the link days after Rayan emails it.
+#
+# One trivial query a day is enough to prevent it. 12:00 UTC is mid-morning in
+# Ontario, so if the ping itself ever breaks, it breaks during the day.
+#
+# This is a stopgap, not the answer. The Pro plan is the answer, because it
+# also brings the daily backups that do not exist today.
+[triggers]
+crons = ["0 12 * * *"]
+
 [observability]
 enabled = true
 
