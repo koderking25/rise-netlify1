@@ -1299,6 +1299,103 @@ React.createElement("style", null, `
     .choice.chosen { border-color: var(--fire); background: var(--ember); box-shadow: 0 0 0 3px rgba(214,86,12,.09); }
     .choice.chosen:hover { transform: translateY(-1px); }
 
+    /* ── Wizard density ───
+       Step 5 asks five questions on one page: availability, setting, how you
+       want to show up, who you want to serve, and why. Measured on a phone it
+       came to 29 interactive controls over four and a half screens of
+       scrolling, which is the "cluttered" everyone means but nobody can point
+       at.
+
+       The three tallest groups are stacks of full-width buttons. Two up on
+       anything wider than a small phone roughly halves the height without
+       moving a single control, changing a label, or hiding anything behind a
+       disclosure the visitor has to find. The questions and their order are
+       untouched. */
+    /* Measured, not assumed: two up on a 375px phone did NOT make the page
+       shorter. The buttons simply got taller as their labels wrapped, 2.93
+       screens against 2.86. Narrower is not shorter. So this starts at 440px,
+       where each column is wide enough that the text still fits on one or two
+       lines and the height genuinely halves. Small phones keep the single
+       column, which is the right layout for them.
+
+       The real fix for a phone is fewer questions per step rather than
+       narrower buttons, and that is a change to the flow rather than the
+       stylesheet. */
+    @media (min-width: 440px) {
+      .opt-row { display: inline-block; width: calc(50% - 5px); vertical-align: top; }
+      .opt-row:nth-of-type(odd) { margin-right: 10px; }
+      .opt-row .choice { height: 100%; }
+    }
+    @media (min-width: 900px) {
+      .opt-row { width: calc(33.333% - 7px); }
+      .opt-row:nth-of-type(odd) { margin-right: 0; }
+      .opt-row:not(:nth-of-type(3n)) { margin-right: 10px; }
+    }
+
+    /* ── Can I apply? ───
+       The verdict chips. Colour alone never carries the meaning: each one
+       says what it means in words, because roughly one boy in twelve cannot
+       reliably tell the green from the amber. */
+    .elig {
+      font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+      display: inline-flex; align-items: center; flex-shrink: 0; letter-spacing: .01em;
+    }
+    .elig-yes { background: rgba(29,111,66,.11); color: #1a6b3f; }
+    .elig-no  { background: rgba(163,43,28,.09);  color: #9a2d1e; }
+    :root[data-theme="dark"] .elig-yes { background: rgba(80,200,140,.14); color: #7fdcab; }
+    :root[data-theme="dark"] .elig-no  { background: rgba(240,120,100,.13); color: #f0a08f; }
+
+    .speed {
+      font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+      display: inline-flex; align-items: center; flex-shrink: 0;
+      background: var(--ink-6, rgba(0,0,0,.05)); color: var(--ink-3);
+    }
+    .speed-fast { background: rgba(29,111,66,.09); color: #1a6b3f; }
+    :root[data-theme="dark"] .speed-fast { background: rgba(80,200,140,.12); color: #7fdcab; }
+
+    /* The age bar. Small, inline, and clearly optional: it asks for one
+       number and says what it is for, rather than presenting itself as a
+       profile field somebody must fill in. */
+    .age-bar {
+      display: inline-flex; align-items: center; gap: 7px; margin-top: 9px;
+      font-size: 12px; color: var(--ink-3);
+      background: var(--surface); border: 1px solid var(--ink-5);
+      border-radius: 999px; padding: 5px 12px 5px 13px;
+      transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+    }
+    .age-bar:focus-within { border-color: var(--fire); box-shadow: 0 0 0 3px rgba(214,86,12,.1); }
+    .age-bar label { font-weight: 600; color: var(--ink-2); }
+    .age-bar input {
+      width: 40px; text-align: center; font: inherit; font-weight: 700;
+      color: var(--ink); background: transparent; border: none; border-bottom: 1.5px dashed var(--ink-4);
+      padding: 1px 2px; outline: none;
+    }
+    .age-bar input::-webkit-outer-spin-button,
+    .age-bar input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .age-bar input[type=number] { -moz-appearance: textfield; }
+    .age-bar input:focus { border-bottom-color: var(--fire); }
+    .age-clear {
+      background: none; border: none; color: var(--ink-4); cursor: pointer;
+      font: inherit; font-size: 11px; text-decoration: underline; padding: 0 2px;
+    }
+    .age-clear:hover { color: var(--fire); }
+
+    /* ── Scroll reveal ───
+       Sections lift in as they enter the viewport, once each. Driven by an
+       IntersectionObserver rather than a scroll handler, so it costs nothing
+       while scrolling and cannot jank the main thread.
+
+       Everything starts visible and is hidden only once the script has
+       confirmed it will observe it. Doing it the other way round means that
+       if the script ever fails, the whole page stays invisible, which is the
+       classic way a reveal animation takes a site down. */
+    .reveal-armed [data-reveal] { opacity: 0; transform: translateY(14px); }
+    [data-reveal] { transition: opacity .55s var(--ease), transform .55s var(--ease); }
+    [data-reveal].revealed { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .reveal-armed [data-reveal] { opacity: 1 !important; transform: none !important; }
+    }
+
     /* ── Motion ───
        Added after finding that 16 transition declarations shipped with a
        doubled decimal point (".18s" written as "..18s"), which is invalid
@@ -3176,6 +3273,53 @@ const LINK_RULE = `LINK RULE - CRITICAL: use ONLY each organization's root homep
    instant: matching can never fail, even fully offline.
    AI web results stack on top whenever they're available.
    ══════════════════════════════════════════════════════════════ */
+/* ── CAN I ACTUALLY APPLY? ────────────────────────────────────────────────
+   RISE knows the real minimum age for a growing number of roles, read off
+   each organization's own page. That turns out to be the single most useful
+   thing it holds, because the two failure modes it prevents are both common
+   and both invisible:
+
+   A 14 year old assumes everything needs a police check and a driving licence,
+   so they never apply anywhere. In fact the hospital in Brantford says plainly
+   that under-18s do not need a police check, Hamilton's library starts at 14,
+   and Hamilton's recreation programmes start at 13.
+
+   Or they apply to five things, hear nothing, and conclude volunteering is not
+   for people their age, when really three of the five were 16+ and nobody told
+   them.
+
+   The age lives in local storage and is never sent anywhere. It is not a date
+   of birth and not an identity: it is one small number used to answer one
+   question. That matters on a platform for minors, where the right amount of
+   personal data is the least that does the job. */
+function eligibility(opp, age) {
+  const min = Number(opp && opp.minAge);
+  if (!Number.isFinite(min) || min <= 0) return { state: "unknown" };
+  if (!Number.isFinite(age) || age <= 0) return { state: "unknown", min: min };
+  if (age >= min) return { state: "yes", min: min };
+  const wait = min - age;
+  return { state: "no", min: min, wait: wait };
+}
+
+/* How long before you could actually start, inferred from what the
+   organization asks for. A student choosing between two roles cares about
+   this and nothing on the open web tells them.
+
+   Deliberately coarse. "Weeks" and "soon" are honest; a number of days would
+   be invented precision, and the one thing these cards must never do is state
+   something the page did not say. */
+function startSpeed(opp) {
+  const s = ((opp && opp.screening) || "") + " " + ((opp && opp.requirements) || "");
+  if (/vulnerable sector|police (record|check)|judicial matters|immuniz|tuberculin|\bTB\b|six weeks|reference/i.test(s)) {
+    return { tone: "slow", label: "Screening takes weeks" };
+  }
+  if (/orientation|training|interview/i.test(s)) {
+    return { tone: "mid", label: "Orientation first" };
+  }
+  if (opp && opp.applyLink) return { tone: "fast", label: "Could start soon" };
+  return null;
+}
+
 /* ── VERIFIED LOCAL OPPORTUNITIES ─────────────────────────────────────────
    Real roles at real organizations, with the page a student actually applies
    on, the age the organization states, and what screening it asks for.
@@ -6673,7 +6817,8 @@ function ResultCardBase({
   onFav,
   studentName,
   studentSkills,
-  student
+  student,
+  riseAge
 }) {
   const [copied, setCopied] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
@@ -7205,6 +7350,29 @@ function ResultCardBase({
       flexShrink: 0
     }
   }, [opp.minAge ? opp.minAge + "+" : null, opp.screening || null].filter(Boolean).join("  \u00b7  ")),
+
+  /* The verdict, once the student has said how old they are. Plain words,
+     because "eligible" is not how a 15 year old thinks about it. When they
+     are too young it says by how long, since "try again at 16" is a plan and
+     a red cross is a dead end. */
+  (() => {
+    const e = eligibility(opp, Number(riseAge));
+    if (e.state === "yes") return /*#__PURE__*/React.createElement("span", {
+      className: "elig elig-yes", title: `This organization takes volunteers from ${e.min}`
+    }, "You can apply");
+    if (e.state === "no") return /*#__PURE__*/React.createElement("span", {
+      className: "elig elig-no", title: `This organization starts at ${e.min}`
+    }, e.wait === 1 ? "Opens to you next year" : `Opens to you at ${e.min}`);
+    return null;
+  })(),
+
+  /* How soon they could realistically start, inferred from what the
+     organization asks for rather than guessed at in days. */
+  (() => {
+    const sp = startSpeed(opp);
+    if (!sp) return null;
+    return /*#__PURE__*/React.createElement("span", { className: "speed speed-" + sp.tone }, sp.label);
+  })(),
   /* Applying inside RISE exists only for RISE Verified postings, because it
      is the only case where a person has checked who is on the other end.
      Everything else still routes to the organization's own page, where the
@@ -8991,6 +9159,10 @@ function MatcherPage({
   const talent = talents[0] || "";
   const [results, setResults, resultsLoaded] = useStorage("rise_results", [], true);
   const [insights, setInsights] = useStorage("rise_insights", {}, true);
+  /* One number, kept in this browser and sent nowhere. Not a date of birth
+     and not an identity: the least personal data that can answer "can I
+     actually apply to this one". */
+  const [riseAge, setRiseAge] = useStorage("rise_age", "", true);
   const [searchMsg, setMsg] = useState("Searching...");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(0);
@@ -10113,6 +10285,7 @@ function MatcherPage({
   /*#__PURE__*/
   React.createElement("div", {
     key: t.id,
+    className: "opt-row",
     style: {
       marginBottom: 8
     }
@@ -10149,6 +10322,7 @@ function MatcherPage({
   /*#__PURE__*/
   React.createElement("div", {
     key: v.id,
+    className: "opt-row",
     style: {
       marginBottom: 8
     }
@@ -10191,6 +10365,7 @@ function MatcherPage({
     }
   }, "How do you want to show up?"), VTYPE_OPTS.map(v => /*#__PURE__*/React.createElement("div", {
     key: v.id,
+    className: "opt-row",
     style: {
       marginBottom: 8
     }
@@ -10469,7 +10644,26 @@ function MatcherPage({
       color: "var(--ink)",
       letterSpacing: "-.4px"
     }
-  }, name ? `${name.split(" ")[0]}'s matches` : "Your matches"), /*#__PURE__*/React.createElement("p", {
+  }, name ? `${name.split(" ")[0]}'s matches` : "Your matches"), /*#__PURE__*/React.createElement("div", {
+  className: "age-bar"
+}, /*#__PURE__*/React.createElement("label", {
+  htmlFor: "rise-age-input"
+}, "I'm"), /*#__PURE__*/React.createElement("input", {
+  id: "rise-age-input",
+  type: "number",
+  min: 10,
+  max: 25,
+  inputMode: "numeric",
+  value: riseAge,
+  placeholder: "--",
+  "aria-label": "Your age, used only in this browser to show which roles you can apply to",
+  onChange: e => setRiseAge(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))
+}), /*#__PURE__*/React.createElement("span", null, riseAge ? "- showing what you can apply to" : "to see what you can apply to"), riseAge && /*#__PURE__*/React.createElement("button", {
+  type: "button",
+  className: "age-clear",
+  onClick: () => setRiseAge(""),
+  "aria-label": "Clear your age"
+}, "clear")), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "var(--ink-3)",
@@ -10626,6 +10820,7 @@ function MatcherPage({
   /*#__PURE__*/
   React.createElement(ResultCard, {
     key: oppKey(opp),
+  riseAge: riseAge,
     opp: opp,
     idx: idx,
     insight: insights[oppKey(opp)],
@@ -16547,6 +16742,79 @@ function AppWithBoundary() {
       "font:700 28px ui-serif,Georgia,serif;color:#D6560C",
       "font:13px ui-monospace,monospace;color:#8a8178"
     );
+  } catch (e) {}
+})();
+
+/* ── SCROLL REVEAL ────────────────────────────────────────────────────────
+   Sections lift in as they enter the viewport, once each.
+
+   Three decisions worth stating, because each is a way this normally goes
+   wrong:
+
+   It arms itself. The hiding class is added by this script, so if the script
+   never runs the page simply renders visible. Writing the opacity into the
+   stylesheet instead is how a reveal animation takes a whole site down when
+   one file fails to load.
+
+   It uses an IntersectionObserver, not a scroll handler, so it costs nothing
+   during a scroll and cannot jank the main thread on a phone.
+
+   It stops watching an element once it has appeared, and it re-scans after
+   React renders, because most of this app's content arrives after mount.
+
+   Anything already on screen at load is revealed immediately rather than
+   animated, so the first paint is never a page of invisible boxes waiting
+   for a scroll that may not come. */
+(function riseReveal() {
+  if (typeof window === "undefined" || window.__riseReveal) return;
+  window.__riseReveal = true;
+
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce || typeof IntersectionObserver === "undefined") return;
+
+  var SELECTOR = [
+    "section", ".card", ".card-lift", ".stat-card", ".result-card"
+  ].join(",");
+
+  document.documentElement.classList.add("reveal-armed");
+
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      e.target.classList.add("revealed");
+      io.unobserve(e.target);
+    });
+  }, { rootMargin: "0px 0px -8% 0px", threshold: 0.04 });
+
+  function scan() {
+    var nodes = document.querySelectorAll(SELECTOR);
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.hasAttribute("data-reveal")) continue;
+      n.setAttribute("data-reveal", "");
+      /* Already on screen: show it now. A reveal that waits for a scroll the
+         visitor may never make is just a blank page. */
+      var r = n.getBoundingClientRect();
+      if (r.top < window.innerHeight && r.bottom > 0) n.classList.add("revealed");
+      else io.observe(n);
+    }
+  }
+
+  var queued = false;
+  function scanSoon() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () { queued = false; scan(); });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", scan);
+  else scan();
+
+  /* This app renders client side and swaps whole views, so new sections keep
+     arriving long after load. Watching the tree is what keeps the effect
+     working on the results page rather than only the first screen. */
+  try {
+    new MutationObserver(scanSoon).observe(document.body, { childList: true, subtree: true });
   } catch (e) {}
 })();
 
