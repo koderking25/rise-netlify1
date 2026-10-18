@@ -1299,6 +1299,47 @@ React.createElement("style", null, `
     .choice.chosen { border-color: var(--fire); background: var(--ember); box-shadow: 0 0 0 3px rgba(214,86,12,.09); }
     .choice.chosen:hover { transform: translateY(-1px); }
 
+    /* ── Import panel ─── */
+    .import-panel { padding: 18px; margin-bottom: 18px; animation: fadeUp .3s var(--ease) both; }
+    .import-panel h3 { font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
+    .imp-lead { font-size: 12.5px; line-height: 1.6; color: var(--ink-3); margin-bottom: 14px; }
+    .imp-lead strong { color: var(--ink-2); }
+    .imp-inputs { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .imp-file { display: inline-flex; align-items: center; cursor: pointer; }
+    .imp-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .imp-file span {
+      display: inline-block; font-size: 12.5px; font-weight: 600; color: var(--fire);
+      border: 1.5px dashed var(--ember-bd); background: var(--ember);
+      padding: 8px 14px; border-radius: 9px;
+      transition: border-color .18s var(--ease), background-color .18s var(--ease);
+    }
+    .imp-file:hover span, .imp-file input:focus-visible + span { border-color: var(--fire); }
+    .imp-or { font-size: 12px; color: var(--ink-4); }
+    .imp-paste { width: 100%; font-size: 12.5px; font-family: ui-monospace, monospace; line-height: 1.6; }
+    .imp-note, .imp-none { font-size: 12px; color: var(--ink-3); margin-top: 9px; line-height: 1.6; }
+    .imp-preview { margin-top: 14px; border-top: 1px solid var(--ink-5); padding-top: 12px; }
+    .imp-head {
+      display: flex; justify-content: space-between; font-size: 11.5px;
+      font-weight: 700; color: var(--ink-3); margin-bottom: 7px;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .imp-rows { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+    .imp-row {
+      display: grid; grid-template-columns: 18px 44px 92px 1fr; align-items: center; gap: 9px;
+      padding: 7px 8px; border-radius: 7px; cursor: pointer; font-size: 12.5px;
+      transition: background-color .15s var(--ease), opacity .15s var(--ease);
+    }
+    .imp-row:hover { background: var(--surface-up, rgba(0,0,0,.03)); }
+    .imp-row.off { opacity: .4; }
+    .imp-h { font-weight: 700; color: var(--fire); }
+    .imp-d { color: var(--ink-3); font-size: 11.5px; }
+    .imp-o { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .imp-row em { color: var(--ink-4); font-size: 11px; }
+    @media (max-width: 480px) {
+      .imp-row { grid-template-columns: 18px 40px 1fr; }
+      .imp-d { display: none; }
+    }
+
     /* ── Wizard density ───
        Step 5 asks five questions on one page: availability, setting, how you
        want to show up, who you want to serve, and why. Measured on a phone it
@@ -3273,6 +3314,155 @@ const LINK_RULE = `LINK RULE - CRITICAL: use ONLY each organization's root homep
    instant: matching can never fail, even fully offline.
    AI web results stack on top whenever they're available.
    ══════════════════════════════════════════════════════════════ */
+/* ── IMPORTING HOURS FROM A SCHOOL FORM ───────────────────────────────────
+   Most schools already have a way of recording volunteer hours, usually a
+   Google Form or a printed sheet. Asking a student to type the same twenty
+   entries into RISE a second time is how a tracker stops being used in week
+   three.
+
+   EVERYTHING HERE RUNS IN THE BROWSER. The file is read with FileReader, the
+   text is parsed in this function, and nothing is uploaded, sent to the AI, or
+   stored anywhere but this device.
+
+   That is a deliberate choice rather than a shortcut. A school hours form
+   carries a minor's full name, their school, their supervisors' names and
+   often those supervisors' phone numbers and signatures. Sending that to a
+   model to be read would be the single largest piece of personal data this
+   platform has ever handled, for a job that plain parsing does well. The rule
+   on this project is to collect too little rather than too much, and a
+   document that never leaves the laptop is the strongest version of that.
+
+   The cost is that a genuinely strange layout will not parse. That is the
+   right trade: the student sees which rows were understood and can fix or add
+   the rest by hand, rather than their form being sent somewhere to save them
+   two minutes.
+
+   Column names vary wildly between schools, so nothing is matched by exact
+   title. Each column is identified by what its header contains, and the hours
+   column falls back to "the column whose values look like small numbers". */
+
+function splitCsvLine(line) {
+  /* A real CSV split: quoted fields may contain commas and doubled quotes.
+     Descriptions of volunteer work contain commas constantly, so a naive
+     line.split(",") shifts every later column by one and silently imports
+     wrong data, which is worse than failing. */
+  const out = [];
+  let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else q = false;
+      } else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+function parseHoursText(text) {
+  const raw = String(text || "").replace(/\r\n?/g, "\n").trim();
+  if (!raw) return { rows: [], note: "" };
+
+  let lines = raw.split("\n").map(l => l.trim()).filter(Boolean);
+  // Tab separated is what you get pasting straight out of a spreadsheet.
+  const tabbed = lines.length > 1 && lines[0].indexOf("\t") >= 0;
+  const cells = lines.map(l => tabbed ? l.split("\t").map(s => s.trim()) : splitCsvLine(l));
+
+  const head = (cells[0] || []).map(h => h.toLowerCase());
+  const findCol = (...needles) => head.findIndex(h => needles.some(n => h.indexOf(n) >= 0));
+
+  let iHours = findCol("hour", "hrs", "time spent", "duration");
+  let iDate  = findCol("date", "day", "when");
+  /* Short needles matter more than complete ones. A column headed simply
+     "Org" does not contain "organisation", and a first pass that only looked
+     for the long forms silently dropped the organisation from every row of a
+     spreadsheet paste. Found by testing against a real-looking export rather
+     than by reading the code. */
+  let iOrg   = findCol("org", "place", "agency", "charity", "where", "location", "site");
+  let iDesc  = findCol("descri", "activity", "what", "task", "role", "duties", "note", "comment", "detail");
+  let iSup   = findCol("supervis", "contact", "signature", "signed", "verifi");
+
+  const hasHeader = iHours >= 0 || iDate >= 0;
+  const body = hasHeader ? cells.slice(1) : cells;
+
+  /* No usable header. Find the hours column by looking at the data: the one
+     whose values are mostly small numbers. Volunteer entries are hours, not
+     amounts, so anything over 24 in every row is probably not it. */
+  if (iHours < 0 && body.length) {
+    const width = Math.max(...body.map(r => r.length));
+    let best = -1, bestScore = 0;
+    for (let c = 0; c < width; c++) {
+      let good = 0;
+      body.forEach(r => {
+        const n = parseFloat(String(r[c] || "").replace(/[^0-9.]/g, ""));
+        if (Number.isFinite(n) && n > 0 && n <= 24) good++;
+      });
+      const score = good / body.length;
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    if (bestScore >= 0.6) iHours = best;
+  }
+  if (iHours < 0) return { rows: [], note: "No column of hours found." };
+
+  /* Same trick for dates when there is no header: the column whose values
+     mostly parse as dates. Without this, a headerless log imports every entry
+     dated today, which quietly makes the whole record wrong. */
+  if (iDate < 0 && body.length) {
+    const width = Math.max(...body.map(r => r.length));
+    let best = -1, bestScore = 0;
+    for (let c = 0; c < width; c++) {
+      if (c === iHours) continue;
+      let good = 0;
+      body.forEach(r => {
+        const v = String(r[c] || "").trim();
+        if (/\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(v) || /\d{1,2}[-/]\d{1,2}[-/]\d{4}/.test(v)) good++;
+      });
+      const score = good / body.length;
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    if (bestScore >= 0.6) iDate = best;
+  }
+
+  const isoDate = v => {
+    const s = String(v || "").trim();
+    if (!s) return "";
+    let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`;
+    /* Day-first and month-first are genuinely ambiguous for the first twelve
+       days of a month, and guessing wrong moves an entry by months. Where it
+       cannot be told apart, the date is left for the student to confirm. */
+    m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      if (a > 12) return `${m[3]}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`;
+      if (b > 12) return `${m[3]}-${String(a).padStart(2,"0")}-${String(b).padStart(2,"0")}`;
+      return "";
+    }
+    const d = new Date(s);
+    return isNaN(d) ? "" : d.toISOString().slice(0, 10);
+  };
+
+  const rows = [];
+  body.forEach(r => {
+    const hv = parseFloat(String(r[iHours] || "").replace(/[^0-9.]/g, ""));
+    if (!Number.isFinite(hv) || hv <= 0) return;
+    rows.push({
+      hours: Math.round(hv * 100) / 100,
+      date: iDate >= 0 ? isoDate(r[iDate]) : "",
+      org: iOrg >= 0 ? (r[iOrg] || "").slice(0, 80) : "",
+      desc: iDesc >= 0 ? (r[iDesc] || "").slice(0, 400) : "",
+      supervisor: iSup >= 0 ? (r[iSup] || "").slice(0, 80) : ""
+    });
+  });
+
+  const note = hasHeader ? "" : "No header row found, so the columns were worked out from the data. Check them.";
+  return { rows: rows, note: note };
+}
+
 /* ── CAN I ACTUALLY APPLY? ────────────────────────────────────────────────
    RISE knows the real minimum age for a growing number of roles, read off
    each organization's own page. That turns out to be the single most useful
@@ -11362,6 +11552,134 @@ function BadgesTab({
     }
   }, "Keep logging hours to earn more. Each badge maps to a UN Sustainable Development Goal."))), Section("Cause Badges", "Earned by logging hours toward a specific UN Sustainable Development Goal.", badges.category), Section("Milestone Badges", "Earned by reaching key moments in your volunteering journey.", badges.milestone));
 }
+/* The import panel. Three rules it follows, each because the alternative is
+   worse than not having the feature:
+
+   Nothing reaches the ledger until the student has seen it. Rows land in a
+   preview with a checkbox each, so an import that misreads a column costs a
+   glance rather than eleven wrong entries to unpick.
+
+   The file never leaves the device. It is read with FileReader and parsed in
+   this browser. A school hours form carries a minor's name, their school and
+   their supervisors' contact details, and none of that needs to travel
+   anywhere for a column of numbers to be read.
+
+   Rows missing a date are kept, not dropped, and marked so. A date that could
+   not be told apart (03/04 could be March or April) is left blank on purpose
+   rather than guessed, because a guess moves an entry by months and nobody
+   would ever notice. */
+function ImportPanel({ imp, setImp, entries, save }) {
+  if (!imp.open) return null;
+
+  const run = (text, fileName) => {
+    const res = parseHoursText(text);
+    setImp(p => ({ ...p, text: text, rows: res.rows, note: res.note, skip: {}, fileName: fileName || "" }));
+  };
+
+  const onFile = e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = ev => run(String(ev.target.result || ""), file.name);
+    r.readAsText(file);
+  };
+
+  const chosen = imp.rows.filter((_, i) => !imp.skip[i]);
+
+  const commit = () => {
+    if (!chosen.length) return;
+    const now = Date.now();
+    const added = chosen.map((r, i) => ({
+      id: `h-${now}-${i}`,
+      project: r.org || "Imported hours",
+      date: r.date || new Date().toISOString().slice(0, 10),
+      hours: Number(r.hours) || 0,
+      desc: r.desc || "Imported from a school hours form.",
+      supervisor: r.supervisor || "",
+      org: r.org || "",
+      where: "",
+      who: [],
+      why: [],
+      _imported: true
+    }));
+    save(added.concat(entries));
+    setImp({ open: false, text: "", rows: [], note: "", skip: {}, fileName: "" });
+  };
+
+  const h = React.createElement;
+  const total = chosen.reduce((a, r) => a + (Number(r.hours) || 0), 0);
+
+  return h("div", { className: "card import-panel" },
+    h("h3", null, "Import hours you have already recorded"),
+    h("p", { className: "imp-lead" },
+      "If your school logs hours in a Google Form or a spreadsheet, open the responses, export or copy them, and drop them here. ",
+      h("strong", null, "The file is read on this device and never uploaded."),
+      " Nothing is added until you have looked at it."),
+
+    h("div", { className: "imp-inputs" },
+      h("label", { className: "imp-file" },
+        h("input", {
+          type: "file",
+          accept: ".csv,.tsv,.txt,text/csv,text/plain",
+          onChange: onFile,
+          "aria-label": "Choose a CSV or text file of your volunteer hours"
+        }),
+        h("span", null, imp.fileName || "Choose a .csv or .txt file")),
+      h("span", { className: "imp-or" }, "or paste it")),
+
+    h("textarea", {
+      className: "field imp-paste",
+      rows: 4,
+      value: imp.text,
+      placeholder: "Paste rows from your form or spreadsheet, including the header row if you have one.",
+      "aria-label": "Paste your volunteer hours",
+      onChange: e => run(e.target.value, "")
+    }),
+
+    imp.note ? h("p", { className: "imp-note" }, imp.note) : null,
+
+    imp.text && !imp.rows.length
+      ? h("p", { className: "imp-none" },
+          "Nothing recognisable yet. The only column that has to be there is one of hours. ",
+          "If it still will not read, add the entries by hand rather than trusting a bad guess.")
+      : null,
+
+    imp.rows.length ? h("div", { className: "imp-preview" },
+      h("div", { className: "imp-head" },
+        h("span", null, chosen.length + " of " + imp.rows.length + " selected"),
+        h("span", null, total.toFixed(total % 1 ? 1 : 0) + " hours")
+      ),
+      h("div", { className: "imp-rows" },
+        imp.rows.map(function (r, i) {
+          return h("label", { key: i, className: "imp-row" + (imp.skip[i] ? " off" : "") },
+            h("input", {
+              type: "checkbox",
+              checked: !imp.skip[i],
+              onChange: function () {
+                setImp(function (p) {
+                  var skip = Object.assign({}, p.skip);
+                  skip[i] = !skip[i];
+                  return Object.assign({}, p, { skip: skip });
+                });
+              },
+              "aria-label": "Include " + r.hours + " hours" + (r.org ? " at " + r.org : "")
+            }),
+            h("span", { className: "imp-h" }, r.hours + "h"),
+            h("span", { className: "imp-d" }, r.date || h("em", null, "no date, today will be used")),
+            h("span", { className: "imp-o" }, r.org || r.desc || h("em", null, "no details"))
+          );
+        })
+      ),
+      h("button", {
+        className: "btn btn-fire press",
+        onClick: commit,
+        disabled: !chosen.length,
+        style: { marginTop: 12 }
+      }, "Add " + chosen.length + " " + (chosen.length === 1 ? "entry" : "entries") + " to my tracker")
+    ) : null
+  );
+}
+
 function HoursPage() {
   const [studentName, setStudentName] = useStorage("rise_studentname", "", true);
   const [provId, setProvId] = useStorage("rise_prov", "on", true);
@@ -11386,6 +11704,11 @@ function HoursPage() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [reflection, setRef] = useState("");
+  /* Import panel. `imp.rows` is a staging area: nothing reaches the tracker
+     until the student has seen each row and pressed the button, because an
+     import that silently adds eleven wrong entries is worse than one that
+     fails. */
+  const [imp, setImp] = useState({ open: false, text: "", rows: [], note: "", skip: {}, fileName: "" });
   const [loadingRef, setLRef] = useState(false);
   const PRESETS = ["Music & Performance Sessions", "Youth Tutoring / STEM Mentoring", "Environmental Conservation", "Food Bank & Community Kitchen", "Athletic Coaching / Sports Mentoring", "Financial Literacy Workshop", "Senior Tech Support", "Community Event Support", "Online / Virtual Volunteering", "Other (specify below)"];
   const total = entries.reduce((s, e) => s + Number(e.hours), 0);
@@ -12066,7 +12389,17 @@ function HoursPage() {
   /*#__PURE__*/
   React.createElement(Plus, {
     size: 13
-  }), " ", showForm ? "Cancel" : "Log New Session"), entries.length > 0 &&
+  }), " ", showForm ? "Cancel" : "Log New Session"),
+
+  /* Import from whatever the school already uses. Sits beside Log New Session
+     rather than buried in settings, because the moment a student wants it is
+     the moment they are staring at an empty ledger remembering they have
+     twenty hours already recorded somewhere else. */
+  /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost press",
+    onClick: () => setImp(p => ({ ...p, open: !p.open })),
+    style: { padding: "10px 18px", fontSize: 13 }
+  }, /*#__PURE__*/React.createElement(Download, { size: 13 }), " ", imp.open ? "Close import" : "Import from a form"), entries.length > 0 &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -12105,7 +12438,9 @@ function HoursPage() {
       color: "var(--ink-3)",
       marginBottom: 6
     }
-  }, "Your full name (appears on the official PDF)"), /*#__PURE__*/React.createElement("input", {
+  }, "Your full name (appears on the official PDF)"), /*#__PURE__*/React.createElement(ImportPanel, {
+    imp: imp, setImp: setImp, entries: entries, save: save
+  }), /*#__PURE__*/React.createElement("input", {
     id: "pdf-name",
     className: "input",
     type: "text",
