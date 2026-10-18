@@ -14780,8 +14780,12 @@ function AboutPage({
      page most of them never open. They are files now, fetched only when this
      component mounts. To swap them, replace the files in public/img/.
      The initial-letter avatar underneath is the fallback if one fails. */
-  const NEIL_PHOTO = "/img/founder-neil.jpg";
-  const RAYAN_PHOTO = "/img/founder-rayan.jpg";
+  /* WebP. 77 KB of photos became 43 KB at the same 640x640, 44% off the
+     heaviest thing on the About page. The jpgs stay on disk, and the
+     initial-letter avatar underneath still covers the case where neither
+     image loads at all. */
+  const NEIL_PHOTO = "/img/founder-neil.webp";
+  const RAYAN_PHOTO = "/img/founder-rayan.webp";
   const h = React.createElement;
   const AMB = "https://docs.google.com/forms/d/e/1FAIpQLSeDVY26ZW9CBGieE4bACfIBYlK61O6s_0KI6HxdCU0lpIP62Q/viewform?usp=sharing&ouid=117285547351667389810";
   const wrap = {
