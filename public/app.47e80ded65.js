@@ -4629,6 +4629,33 @@ function libraryCandidates(talentIds, cityShort, opts = {}) {
     return out;
   }
   const ids = talentIds && talentIds.length ? talentIds : Object.keys(BUILTIN_OPPS);
+
+  /* VERIFIED LOCAL FIRST, and this is the path that actually runs.
+     builtinOpps() below also knows about LOCAL_OPPS, but that is the offline
+     fallback. This function is what feeds a real search, so a local set
+     missing from here was invisible to every student whose AI search worked:
+     they got national charity homepages while twenty-six checked roles with
+     working application forms sat unused. Reported as "I chose business and
+     music and saw no apply buttons", which is exactly what that looks like
+     from the outside.
+
+     Pushed ahead of the national pool so the judge downstream scores them
+     first, and every one carries the applyLink, minAge and screening read off
+     the organization's own page. */
+  const localSet = LOCAL_OPPS[localKeyFor(cityShort)] || {};
+  const localIds = ids.length ? ids : Object.keys(localSet);
+  const pushedLocal = new Set();
+  const pushLocal = tid => (localSet[tid] || []).forEach(o => {
+    if (pushedLocal.has(o.title + o.org)) return;
+    pushedLocal.add(o.title + o.org);
+    out.push({ ...o, where: o.where || cityShort, _cat: tid, _curated: true, _verifiedLocal: true });
+  });
+  localIds.forEach(pushLocal);
+  /* Then anything else verified in this city. In a smaller place a student who
+     picked music should still see the hospital and the food bank rather than a
+     national page, once the one local music role is spent. */
+  Object.keys(localSet).forEach(pushLocal);
+
   ids.forEach(tid => {
     (BUILTIN_OPPS[tid] || []).forEach(o => {
       out.push({
@@ -8942,8 +8969,11 @@ function MatcherPage({
   const [location, setLoc] = useState("");
   const [talents, setTalents] = useState([]);
   const [caps, setCaps] = useState([]);
-  const [time, setTime] = useState("");
-  const [vibe, setVibe] = useState("");
+  /* Arrays, not a single id. A student can genuinely do a weekly shift AND
+     one-off events, and can be happy in a group AND one to one. Forcing one
+     answer threw away a true one. */
+  const [time, setTime] = useState([]);
+  const [vibe, setVibe] = useState([]);
   const [serve, setServe] = useState([]);
   // VIC dimensions: how they want to show up, and why they're doing this.
   const [vtype, setVtype] = useState("");
@@ -9037,8 +9067,8 @@ function MatcherPage({
   }).filter(Boolean).join("; ");
   const langTxt = Object.keys(langs).filter(l => langs[l]).map(l => `${l} (${(LANG_LEVELS.find(x => x.id === langs[l]) || {}).label || ""})`).join(", ");
   const prefs = {
-    timeTxt: (typeof TIME_OPTS !== "undefined" ? TIME_OPTS.find(t => t.id === time)?.label : "") || "",
-    vibeTxt: (typeof VIBE_OPTS !== "undefined" ? VIBE_OPTS.find(v => v.id === vibe)?.label : "") || "",
+    timeTxt: (typeof TIME_OPTS !== "undefined" ? (time || []).map(id => TIME_OPTS.find(t => t.id === id)?.label).filter(Boolean).join(", ") : "") || "",
+    vibeTxt: (typeof VIBE_OPTS !== "undefined" ? (vibe || []).map(id => VIBE_OPTS.find(v => v.id === id)?.label).filter(Boolean).join(", ") : "") || "",
     serveTxt: (serve || []).filter(id => id !== "any").map(id => (SERVE_OPTS.find(o => o.id === id) || {}).label).filter(Boolean).join(", "),
     vtypeTxt: (VTYPE_OPTS.find(v => v.id === vtype) || {}).label || "",
     langTxt,
@@ -10087,8 +10117,8 @@ function MatcherPage({
       marginBottom: 8
     }
   }, /*#__PURE__*/React.createElement(ChoiceBtn, {
-    selected: time === t.id,
-    onClick: () => setTime(t.id)
+    selected: time.includes(t.id),
+    onClick: () => setTime(prev => prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id])
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
@@ -10123,8 +10153,13 @@ function MatcherPage({
       marginBottom: 8
     }
   }, /*#__PURE__*/React.createElement(ChoiceBtn, {
-    selected: vibe === v.id,
-    onClick: () => setVibe(v.id)
+    selected: vibe.includes(v.id),
+    /* "Either works" is the catch-all, so it clears the specific ones and
+       they clear it, the same way "Open to anyone" behaves in the population
+       question. Holding both at once would say nothing. */
+    onClick: () => setVibe(prev => v.id === "either"
+      ? (prev.includes("either") ? [] : ["either"])
+      : (prev.includes(v.id) ? prev.filter(x => x !== v.id) : [...prev.filter(x => x !== "either"), v.id]))
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
