@@ -3133,6 +3133,186 @@ const LINK_RULE = `LINK RULE - CRITICAL: use ONLY each organization's root homep
    instant: matching can never fail, even fully offline.
    AI web results stack on top whenever they're available.
    ══════════════════════════════════════════════════════════════ */
+/* ── VERIFIED LOCAL OPPORTUNITIES ─────────────────────────────────────────
+   Real roles at real organizations, with the page a student actually applies
+   on, the age the organization states, and what screening it asks for.
+
+   Everything here was read off the organization's own page on 18 October
+   2026, not recalled and not taken from a summary. Where a page does not
+   state a minimum age, this carries none: a guessed age floor turns a
+   14 year old away from a door that would have taken them, which is worse
+   than saying nothing.
+
+   The one fact most worth surfacing: several of these do NOT require a
+   police check for under-18s, and the hospital says so explicitly. Students
+   routinely assume a vulnerable sector check is required everywhere and rule
+   themselves out before applying.
+
+   These rank above the national fallbacks for a student in that city, because
+   a named local role with a working form beats a national charity's homepage
+   every time.
+
+   To add a city: add its key here and keep the same shape. A role with no
+   verified applyLink does not belong in this list. */
+const LOCAL_OPPS = {
+  brantford: {
+    education: [{
+      title: "Library Volunteer",
+      org: "Brantford Public Library",
+      tagline: "Shelving, programs, and the summer reading club.",
+      desc: "You help run library programs and keep the collection in order. The library says plainly that you must be 14 to volunteer, which makes it one of the few places a 14 year old can start.",
+      hours: "2-3 hrs/week",
+      link: "https://www.brantfordlibrary.ca/about-the-library/support-your-library/volunteering/",
+      /* The form itself, not the page describing it. Its own age question
+         offers "Youth (14-18 years of age)", which is where the 14 below is
+         confirmed; an earlier entry in this app claimed 13, from a Grade 8
+         wording that is no longer what the library asks. */
+      applyLink: "https://forms.brantfordlibrary.ca/Volunteer-Application",
+      minAge: 14,
+      verified: "2026-10-18",
+      tags: ["youth-friendly", "local", "no-police-check"]
+    }],
+    music: [{
+      title: "Front of House Volunteer",
+      org: "Sanderson Centre for the Performing Arts",
+      tagline: "Be in the room for every show that comes through town.",
+      desc: "Ushering, checking tickets and helping at the merchandise table during live performances. You see the show, and you learn how a venue actually runs on a performance night.",
+      hours: "An evening per show",
+      link: "https://www.brantford.ca/things-to-do/volunteering/",
+      applyLink: "https://www.brantford.ca/things-to-do/volunteering/",
+      minAge: 14,
+      verified: "2026-10-18",
+      tags: ["youth-friendly", "local", "arts"]
+    }],
+    community: [{
+      title: "Hospital Volunteer",
+      org: "Brant Community Healthcare System",
+      tagline: "They do not ask under-18s for a police check.",
+      desc: "Wayfinding, greeting patients and visitors, and helping in retail and fundraising around the hospital. Applying means a form, then references and an interview.",
+      hours: "One shift a week",
+      link: "https://www.bchsys.org/careers-and-volunteering/volunteer/",
+      applyLink: "https://www.bchsys.org/careers-and-volunteering/volunteer/volunteer-application/",
+      screening: "References and an interview. The hospital states that police checks are not required under 18",
+      verified: "2026-10-18",
+      tags: ["local", "healthcare", "no-police-check"]
+    }, {
+      title: "Animal Care Volunteer",
+      org: "Brant County SPCA",
+      tagline: "Cat socialising, dog walking, and shelter days.",
+      desc: "Hands-on work with shelter animals: walking dogs, spending time with cats so they stay used to people, and helping at events. There is an orientation before you handle any animal.",
+      hours: "2-4 hrs/week",
+      link: "https://www.brantcountyspca.com/",
+      applyLink: "https://www.brantcountyspca.com/volunteer-form/",
+      minAge: 15,
+      screening: "Orientation required. A Judicial Matters Check applies only to applicants 18 and over",
+      verified: "2026-10-18",
+      tags: ["local", "animals", "no-police-check"]
+    }, {
+      title: "Food Bank Volunteer",
+      org: "Brantford Food Bank, Community Resource Service",
+      tagline: "Sorting, stocking, and handing groceries to neighbours.",
+      desc: "The food bank runs under Community Resource Service, so intake lives on the CRS site and applications go through their BetterImpact portal. Sorting donations, stocking shelves, and helping people who come in.",
+      hours: "A shift a week",
+      link: "https://crs-help.ca/foodbank",
+      applyLink: "https://crs-help.ca/volunteer",
+      minAge: 16,
+      /* The exception is the useful half. A 14 year old reading "16+" rules
+         themselves out; CRS actually takes younger volunteers with a parent
+         or guardian, which is the difference between a dead end and a plan. */
+      screening: "16 and over on your own. Younger volunteers are welcome with a parent or guardian",
+      verified: "2026-10-18",
+      tags: ["local", "food-security", "with-a-parent"]
+    }, {
+      title: "City Events Volunteer",
+      org: "City of Brantford",
+      tagline: "The events the whole city turns up to.",
+      desc: "Helping run municipal events and recreation programs. The city sets its general volunteer age at 14, though individual events can set their own requirements, so read the listing you are applying to.",
+      hours: "Varies by event",
+      link: "https://www.brantford.ca/things-to-do/volunteering/",
+      applyLink: "https://www.brantford.ca/things-to-do/volunteering/",
+      minAge: 14,
+      verified: "2026-10-18",
+      tags: ["youth-friendly", "local", "events"]
+    }, {
+      title: "Hospice Support Volunteer",
+      org: "St Joseph's Lifecare Centre, Stedman Community Hospice",
+      tagline: "Hard, and some of the most meaningful work in the city.",
+      desc: "Supporting residents and families at the hospice and through community palliative outreach. There is real training before placement, and it is not work to take on lightly.",
+      hours: "One shift a week",
+      link: "https://www.sjlc.ca/volunteers",
+      applyLink: "https://www.sjlc.ca/volunteers",
+      screening: "Supportive care training is required before placement",
+      verified: "2026-10-18",
+      tags: ["local", "healthcare", "training-provided"]
+    }, {
+      title: "Children's Centre Volunteer",
+      org: "Lansdowne Children's Centre",
+      tagline: "Supporting kids with disabilities and their families.",
+      desc: "Helping with fundraising, events and programs at a centre supporting children and youth with physical, developmental and communication needs.",
+      hours: "Flexible",
+      link: "https://www.lansdownecentre.ca/lansdowne-services/fundraising-and-volunteering",
+      applyLink: "https://www.lansdownecentre.ca/lansdowne-services/fundraising-and-volunteering",
+      verified: "2026-10-18",
+      tags: ["local", "disability", "youth-friendly"]
+    }, {
+      title: "Community Meal and Outreach Volunteer",
+      org: "Why Not City Missions",
+      tagline: "Youth outreach, run by people who do it every week.",
+      desc: "Helping with meals, drop-in programs and outreach to young people in Brantford.",
+      hours: "An evening a week",
+      link: "https://www.whynotcitymissions.com/volunteer",
+      applyLink: "https://www.whynotcitymissions.com/volunteer",
+      verified: "2026-10-18",
+      tags: ["local", "youth-friendly"]
+    }],
+    business: [{
+      title: "ReStore Volunteer",
+      org: "Habitat for Humanity Brant, Norfolk and Haldimand",
+      tagline: "Retail, donations and the woodshop.",
+      desc: "Customer service on the shop floor, testing and sorting donated goods, receiving donations, and refurbishing items in the woodshop. Genuine retail experience, and the money funds builds.",
+      hours: "A shift a week",
+      link: "https://www.habitat4home.ca/",
+      applyLink: "https://www.habitat4home.ca/volunteer",
+      minAge: 15,
+      verified: "2026-10-18",
+      tags: ["local", "retail", "youth-friendly"]
+    }, {
+      title: "Build Crew Volunteer",
+      org: "Habitat for Humanity Brant, Norfolk and Haldimand",
+      tagline: "On site, on a real build, with no experience needed.",
+      desc: "Working on an active residential build under an experienced Crew Leader. No trade experience is required and nobody expects you to arrive knowing anything.",
+      hours: "A full build day",
+      link: "https://www.habitat4home.ca/",
+      applyLink: "https://www.habitat4home.ca/volunteer",
+      minAge: 16,
+      verified: "2026-10-18",
+      tags: ["local", "hands-on", "trades"]
+    }],
+    environment: [{
+      title: "Conservation Volunteer",
+      org: "Grand River Conservation Authority",
+      tagline: "Tree planting, cleanups and the nature centres.",
+      desc: "Stewardship work across the Grand River watershed: planting, shoreline and trail cleanups, and helping at nature centre programs. Outdoors, seasonal, and genuinely physical.",
+      hours: "Event based",
+      link: "https://www.grandriver.ca/learn-get-involved/",
+      applyLink: "https://www.grandriver.ca/learn-get-involved/volunteer/",
+      verified: "2026-10-18",
+      tags: ["local", "outdoors", "environment"]
+    }]
+  }
+};
+
+/* Which local set applies, from whatever the UI calls the place. Kept
+   deliberately simple: a city only appears here once someone has read its
+   organizations' pages, so an unknown place correctly returns nothing and the
+   national fallbacks take over. */
+function localKeyFor(cityShort) {
+  const c = String(cityShort || "").toLowerCase();
+  if (!c) return "";
+  if (c.indexOf("brantford") >= 0 || c.indexOf("brant") >= 0) return "brantford";
+  return "";
+}
+
 const BUILTIN_OPPS = {
   music: [{
     title: "Music Visits Volunteer",
@@ -3460,39 +3640,10 @@ const BUILTIN_OPPS = {
     tags: ["youth-friendly", "local"]
   }],
   community: [{
-    /* Added after opening each of these sites and confirming every link
-       resolves. The two Brantford entries are deliberately specific rather than
-       national: a student can act on them this week, and they bracket the age
-       range usefully. The library takes anyone who has finished Grade 8, which
-       covers most of RISE's 14 year olds; the food bank starts at 16. Saying
-       both plainly is the point, because the door is the worst place to find
-       out you are too young. */
-    title: "Youth Volunteer",
-    org: "Brantford Public Library",
-    tagline: "Tell a library what teenagers actually want from it.",
-    desc: "You complete short Youth Gigs, give staff a teenage read on what the library buys and runs, and help shape teen programs. The only qualification listed is having finished Grade 8, which makes this one of the easiest real roles to start with.",
-    hours: "1-2 hrs/week",
-    link: "https://www.brantfordlibrary.ca/about-the-library/support-your-library/volunteering/",
-    applyLink: "https://forms.brantfordlibrary.ca/Volunteer-Application",
-    minAge: 13,
-    screening: "None listed",
-    tags: ["youth-friendly", "brantford", "no-experience"]
-  }, {
-    title: "Food Bank Volunteer",
-    org: "Brantford Food Bank (Community Resource Service)",
-    tagline: "Sorting, stocking, and handing groceries to neighbours.",
-    desc: "The Brantford Food Bank runs under Community Resource Service, so the intake lives on the CRS site and applications go through their BetterImpact portal. Students wanting summer shifts are asked to apply by June 1 and commit to one shift a week through July and August.",
-    hours: "1 shift/week",
-    link: "https://crs-help.ca/volunteer",
-    applyLink: "https://app.betterimpact.com/Application?ApplicationFormNumber=1&OrganizationGuid=9529f3c4-e3a1-4858-bcf0-19f37931f03c",
-    minAge: 16,
-    screening: "Vulnerable sector check, two non-family references",
-    tags: ["brantford", "food-security"]
-  }, {
     title: "Find your local food bank",
     org: "Food Banks Canada",
     tagline: "Almost every town has one, and most are short-handed.",
-    desc: "If you are not in Brantford, this finder lists member food banks across the country. Sorting and stocking shifts rarely need experience, though each location sets its own minimum age, so check the one near you before counting on it.",
+    desc: "This finder lists member food banks across the country, so it works wherever you are. Sorting and stocking shifts rarely need experience, though each location sets its own minimum age, so check the one near you before counting on it.",
     hours: "2-4 hrs/week",
     link: "https://foodbankscanada.ca/find-a-food-bank/",
     screening: "Varies by location",
@@ -4294,17 +4445,42 @@ function builtinOpps(talent, cityShort, seenSet, n = 4, opts = {}) {
       _curated: true
     }));
   }
+  /* 0) VERIFIED LOCAL FIRST. A named role at an organization down the road,
+        with a form that was opened and checked, beats a national charity's
+        homepage every time. These were read off the organizations' own pages
+        rather than recalled, so they carry the real age floor and the real
+        screening, including the several that do not ask under-18s for a
+        police check. */
+  const localSet = (LOCAL_OPPS[localKeyFor(cityShort)] || {});
+  const localHits = shuffle(dedupe(localSet[talent] || []));
+  const localRest = shuffle(dedupe(
+    Object.keys(localSet).filter(k => k !== talent).reduce((a, k) => a.concat(localSet[k]), [])
+  ));
+
   // 1) STRICT category first - everything in the chosen talent's pool.
   const primary = shuffle(dedupe(BUILTIN_OPPS[talent] || []));
   // 2) Only if the category pool cannot fill the batch, backfill from community.
   const need = Math.max(0, n - primary.length);
   const backup = need > 0 && talent !== "community" ? shuffle(dedupe(BUILTIN_OPPS.community || [])).slice(0, need) : [];
-  const out = primary.slice(0, n).concat(backup);
-  return out.map(o => ({
-    ...o,
-    where: `${cityShort}: local branch or chapter`,
-    _curated: true
-  }));
+  /* Local in-category, then the rest of the national pool, then any other
+     local role. The last tier matters in a small city: a student who picked
+     music in Brantford should still be shown the hospital and the SPCA rather
+     than a national page, once the one local music role is used up. */
+  const out = localHits.concat(primary, backup, localRest).slice(0, n);
+  const localOrgs = new Set([].concat(localHits, localRest).map(o => o.org));
+  return out.map(o => {
+    /* "local branch or chapter" is right for a national charity, and wrong
+       for an organization that only exists here. The Brant County SPCA is not
+       a branch of anything, and describing it as one makes a verified local
+       role read like a guess. */
+    const isLocal = localOrgs.has(o.org);
+    return {
+      ...o,
+      where: o.where || (isLocal ? cityShort : `${cityShort}: local branch or chapter`),
+      _curated: true,
+      _verifiedLocal: isLocal
+    };
+  });
 }
 
 // Warm, personal insight that never needs a network
@@ -12440,6 +12616,11 @@ function ContactSection() {
     }
   }, "First name"), /*#__PURE__*/React.createElement("input", {
     name: "First Name",
+    /* The visible "First name" text above is a bare <label> with no `for`, so
+       nothing associates it with this box. Sighted users see a labelled
+       field; a screen reader announces an unlabelled one. aria-label is the
+       smaller fix here than threading ids through precompiled output. */
+    "aria-label": "First name",
     required: true,
     maxLength: 60,
     style: inputStyle
@@ -12453,6 +12634,7 @@ function ContactSection() {
     }
   }, "Last name"), /*#__PURE__*/React.createElement("input", {
     name: "Last Name",
+    "aria-label": "Last name",
     required: true,
     maxLength: 60,
     style: inputStyle
@@ -12470,6 +12652,7 @@ function ContactSection() {
     }
   }, "Message"), /*#__PURE__*/React.createElement("textarea", {
     name: "Message",
+    "aria-label": "Message",
     required: true,
     rows: 5,
     maxLength: 2000,

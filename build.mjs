@@ -32,9 +32,28 @@ if (oldName !== newName) {
 }
 writeFileSync("public/index.html", html);
 
-// The CSP names the one inline script by hash; recompute it from what ships.
-const inline = html.match(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/);
-if (!inline) { console.error("no inline script found in index.html"); process.exit(1); }
+/* The CSP names the one EXECUTABLE inline script by hash; recompute it from
+   what ships.
+ *
+ * The type filter is load-bearing. index.html also carries a
+ * <script type="application/ld+json"> block of structured data, which sits
+ * above the theme script. A plain "first inline script" match grabbed that
+ * instead and wrote its hash into the policy, which would have shipped a site
+ * whose theme script the browser refuses: no dark mode, a flash of the wrong
+ * colours, and nothing in the console pointing at the real cause.
+ *
+ * A data block is not executed, so CSP never applies to it. Only a script with
+ * no type, or an explicitly JavaScript one, needs a hash. */
+const executable = [...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/g)]
+  .filter(m => {
+    const type = (m[1].match(/\btype\s*=\s*["']([^"']+)["']/) || [,""])[1].toLowerCase();
+    return !type || type === "text/javascript" || type === "module" || type === "application/javascript";
+  });
+if (executable.length !== 1) {
+  console.error(`expected exactly 1 executable inline script in index.html, found ${executable.length}`);
+  process.exit(1);
+}
+const inline = executable[0].slice(1); // [full, attrs, body] -> [attrs, body]; body is [1]
 const want = b64(inline[1]);
 let worker = readFileSync("src/index.js", "utf8");
 const have = worker.match(/'sha256-([^']+)'/);
