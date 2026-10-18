@@ -1256,7 +1256,7 @@ React.createElement("style", null, `
     .btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 7px;
       font-family: 'DM Sans', sans-serif; font-weight: 600; cursor: pointer;
-      border: none; border-radius: 10px; transition: color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s; letter-spacing: -.01em;
+      border: none; border-radius: 10px; transition: color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s; letter-spacing: -.01em;
     }
     .btn:disabled { opacity: .4; pointer-events: none; }
     .btn:active:not(:disabled) { transform: scale(.97); }
@@ -1291,13 +1291,56 @@ React.createElement("style", null, `
     .choice {
       width: 100%; text-align: left; cursor: pointer; background: var(--surface);
       border: 1px solid var(--ink-5); border-radius: 12px; padding: 14px 16px;
-      transition: color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s; display: flex; align-items: flex-start; gap: 12px;
+      transition: color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s; display: flex; align-items: flex-start; gap: 12px;
       font-family: 'DM Sans', sans-serif;
     }
     .choice:hover { border-color: var(--ink-4); background: var(--surface-up); transform: translateY(-1px); }
     .choice:active { transform: translateY(0); }
     .choice.chosen { border-color: var(--fire); background: var(--ember); box-shadow: 0 0 0 3px rgba(214,86,12,.09); }
     .choice.chosen:hover { transform: translateY(-1px); }
+
+    /* ── Motion ───
+       Added after finding that 16 transition declarations shipped with a
+       doubled decimal point (".18s" written as "..18s"), which is invalid
+       CSS, so browsers dropped the whole declaration. Every one of those
+       elements had no transition at all. That is most of why the interface
+       felt abrupt rather than unsmooth: it was not easing, it was snapping.
+
+       These are deliberately restrained. One easing curve used everywhere,
+       distances of a pixel or two, and nothing that moves on load. The blanket
+       prefers-reduced-motion rule higher up already stops all of it for anyone
+       who asked their system for stillness. */
+    :root { --ease: cubic-bezier(.22,.61,.36,1); --ease-spring: cubic-bezier(.34,1.3,.64,1); }
+
+    html { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+    /* Cards settle rather than jump. The shadow carries most of the lift, so
+       the movement can stay small enough to feel physical. */
+    .card-lift { transition: transform .22s var(--ease), box-shadow .22s var(--ease), border-color .2s var(--ease); }
+    .card-lift:hover { transform: translateY(-2px); box-shadow: var(--sh-md, 0 8px 24px rgba(0,0,0,.09)); }
+
+    /* The choice buttons are the heart of the match flow, so they get the
+       springier curve: a toggle should feel like it latched. */
+    .choice { transition: transform .16s var(--ease-spring), background-color .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease); }
+    .choice:active { transform: scale(.985); }
+
+    .btn, .press { transition: transform .14s var(--ease-spring), background-color .18s var(--ease), box-shadow .18s var(--ease), opacity .18s var(--ease); }
+    .btn:active { transform: scale(.97); }
+
+    /* Results arrive in sequence instead of all at once. Capped at eight so a
+       long list never leaves the last card waiting. */
+    .result-card { animation: riseIn .34s var(--ease) both; }
+    .result-card:nth-child(1){animation-delay:.02s} .result-card:nth-child(2){animation-delay:.06s}
+    .result-card:nth-child(3){animation-delay:.10s} .result-card:nth-child(4){animation-delay:.14s}
+    .result-card:nth-child(5){animation-delay:.18s} .result-card:nth-child(6){animation-delay:.22s}
+    .result-card:nth-child(7){animation-delay:.26s} .result-card:nth-child(n+8){animation-delay:.3s}
+    @keyframes riseIn { from { opacity:0; transform: translateY(6px) } to { opacity:1; transform:none } }
+
+    /* A focus ring that is visible on both themes and does not shift layout. */
+    .choice:focus-visible, .btn:focus-visible, .card-lift:focus-visible {
+      outline: 2px solid var(--fire); outline-offset: 2px;
+    }
 
     /* ── Nav links ─── */
     .nav-link {
@@ -3155,6 +3198,174 @@ const LINK_RULE = `LINK RULE - CRITICAL: use ONLY each organization's root homep
    To add a city: add its key here and keep the same shape. A role with no
    verified applyLink does not belong in this list. */
 const LOCAL_OPPS = {
+  hamilton: {
+    community: [{
+      title: "High School Student Volunteer",
+      org: "Hamilton Health Sciences",
+      tagline: "A program built for high schoolers, not adapted for them.",
+      desc: "HHS runs a dedicated High School Student Volunteer Program across Hamilton General, Juravinski and its other sites, with evening shifts that fit around school. You are placed on a unit and given a real role.",
+      hours: "2 hrs/week, evenings",
+      link: "https://www.hamiltonhealthsciences.ca/volunteer/",
+      applyLink: "https://www.hamiltonhealthsciences.ca/volunteer/",
+      minAge: 14,
+      screening: "Expect a minimum commitment of around 50 hours or six months, and health clearance",
+      verified: "2026-10-18",
+      tags: ["local", "healthcare", "youth-friendly"]
+    }, {
+      title: "Hospital Volunteer",
+      org: "St Joseph's Healthcare Hamilton",
+      tagline: "Clinical areas from 15, with a real commitment attached.",
+      desc: "Placements across St Joseph's sites. The commitment is roughly 75 hours over four months at 2 to 4 hours a week, so it suits someone who wants one thing they stick with rather than several they sample.",
+      hours: "2-4 hrs/week",
+      link: "https://www.joinstjoes.ca/volunteer-here",
+      applyLink: "https://www.joinstjoes.ca/volunteer-here",
+      minAge: 15,
+      screening: "15 for general clinical areas. Mental health programs at West 5th are 18 and over",
+      verified: "2026-10-18",
+      tags: ["local", "healthcare"]
+    }, {
+      title: "Shelter and Meal Service Volunteer",
+      org: "Mission Services of Hamilton",
+      tagline: "Emergency shelter, meal prep, food bank.",
+      desc: "Hands-on work in emergency shelter operations: preparing and serving meals, food bank distribution, grounds and facilities. Fast to start compared with hospital placements.",
+      hours: "A shift a week",
+      link: "https://mission-services.com/volunteering/",
+      applyLink: "https://mission-services.com/volunteering/",
+      minAge: 16,
+      screening: "Interview, online registration and policy sign-off",
+      verified: "2026-10-18",
+      tags: ["local", "food-security"]
+    }],
+    education: [{
+      title: "Teen Tech Tutor or Lit Leader",
+      org: "Hamilton Public Library",
+      tagline: "Teach a senior to use a tablet. Run a teen reading group.",
+      desc: "HPL runs roles designed for teenagers: Teen Tech Tutors helping people with devices, Lit Leaders running reading programs, and Teen Gaming. Police checks apply only from 18, so a 14 year old can start now.",
+      hours: "2 hrs/week",
+      link: "https://hpl.ca/volunteer-at-hpl/",
+      applyLink: "https://hpl.ca/volunteer-at-hpl/",
+      minAge: 14,
+      screening: "Police checks are required only for volunteers 18 and older",
+      verified: "2026-10-18",
+      tags: ["local", "youth-friendly", "no-police-check", "tech"]
+    }],
+    business: [{
+      title: "ReStore and Build Volunteer",
+      org: "Habitat for Humanity Hamilton",
+      tagline: "Retail floor, donation sorting, and build days.",
+      desc: "Habitat Hamilton takes new volunteers across its ReStore and its builds. Retail and warehouse work, or a day on an active site with a crew leader.",
+      hours: "A shift a week",
+      link: "https://habitathamilton.ca/new-volunteers/",
+      applyLink: "https://habitathamilton.ca/new-volunteers/",
+      verified: "2026-10-18",
+      tags: ["local", "retail", "hands-on"]
+    }],
+    environment: [{
+      title: "City Volunteer",
+      org: "City of Hamilton",
+      tagline: "Recreation programming from 13, which is rare.",
+      desc: "The city runs volunteer roles across recreation programming, long-term care at Macassa and Wentworth Lodges, animal services and the Trillium garden awards. Recreation starts at 13.",
+      hours: "Varies",
+      link: "https://www.hamilton.ca/city-council/jobs-city/volunteer-opportunities",
+      applyLink: "https://www.hamilton.ca/city-council/jobs-city/volunteer-opportunities",
+      minAge: 13,
+      screening: "The Lodges require a Vulnerable Sector Check and references. Recreation does not",
+      verified: "2026-10-18",
+      tags: ["local", "youth-friendly", "events"]
+    }]
+  },
+  burlington: {
+    community: [{
+      title: "Hospital Volunteer",
+      org: "Joseph Brant Hospital",
+      tagline: "Applications run through the hospital's own portal.",
+      desc: "Placements across Joseph Brant in Burlington. Intake is handled through their volunteer portal rather than email, so you can see what is open before you apply.",
+      hours: "One shift a week",
+      link: "https://www.josephbranthospital.ca/about-us/join-us/volunteers",
+      applyLink: "https://josephbrant.vsysweb.com/pages/webapp/PC7ABUD80J2NKU9V",
+      screening: "A Vulnerable Sector Screen is required for applicants 18 and over",
+      verified: "2026-10-18",
+      tags: ["local", "healthcare", "no-police-check"]
+    }, {
+      title: "City Volunteer",
+      org: "City of Burlington",
+      tagline: "One board for everything the city runs.",
+      desc: "Burlington lists its municipal volunteer openings in one place, from events and recreation to committees. Worth checking rather than guessing which department needs help.",
+      hours: "Varies",
+      link: "https://www.getinvolvedburlington.ca/",
+      applyLink: "https://www.getinvolvedburlington.ca/",
+      verified: "2026-10-18",
+      tags: ["local", "events"]
+    }]
+  },
+  mississauga: {
+    community: [{
+      title: "Food Bank Volunteer",
+      org: "Food Banks Mississauga",
+      tagline: "Independent from 14, younger with an adult.",
+      desc: "Sorting and packing food for the Mississauga network. They take volunteers as young as 9 with supervision, and from 14 you can volunteer on your own.",
+      hours: "A shift a week",
+      link: "https://www.foodbanksmississauga.ca/volunteer/",
+      applyLink: "https://www.foodbanksmississauga.ca/volunteer/",
+      minAge: 14,
+      screening: "14 to volunteer independently. Younger volunteers are welcome with an adult",
+      verified: "2026-10-18",
+      tags: ["local", "food-security", "youth-friendly", "with-a-parent"]
+    }, {
+      title: "City Volunteer",
+      org: "City of Mississauga",
+      tagline: "Recreation, events and animal services.",
+      desc: "The city's central volunteer intake, covering recreation programs, community events and animal services.",
+      hours: "Varies",
+      link: "https://www.mississauga.ca/our-organization/jobs-and-volunteer/volunteer/",
+      applyLink: "https://www.mississauga.ca/our-organization/jobs-and-volunteer/volunteer/",
+      verified: "2026-10-18",
+      tags: ["local", "events"]
+    }, {
+      title: "Animal Shelter Volunteer",
+      org: "Mississauga Humane Society",
+      tagline: "Shelter animals, and the people who rehome them.",
+      desc: "Helping with animal care and the work around rehoming. Check their page for which roles are open to under-18s before you apply.",
+      hours: "2-4 hrs/week",
+      link: "https://www.mississaugahumanesociety.ca/volunteer",
+      applyLink: "https://www.mississaugahumanesociety.ca/volunteer",
+      verified: "2026-10-18",
+      tags: ["local", "animals"]
+    }]
+  },
+  toronto: {
+    community: [{
+      title: "City Volunteer",
+      org: "City of Toronto",
+      tagline: "The city's own volunteer intake.",
+      desc: "Toronto runs volunteer placements across recreation, parks, shelters and community programs, listed and applied for in one place.",
+      hours: "Varies",
+      link: "https://www.toronto.ca/community-people/get-involved/volunteer-with-the-city/",
+      applyLink: "https://www.toronto.ca/community-people/get-involved/volunteer-with-the-city/",
+      verified: "2026-10-18",
+      tags: ["local", "events"]
+    }, {
+      title: "Community Food Centre Volunteer",
+      org: "The Stop Community Food Centre",
+      tagline: "Kitchens, markets and the garden.",
+      desc: "The Stop runs community kitchens, a farmers market, a greenhouse and food access programs in west Toronto. Varied work, and a genuinely well-known organization to have on a record.",
+      hours: "A shift a week",
+      link: "https://www.thestop.org/volunteer/",
+      applyLink: "https://www.thestop.org/volunteer/",
+      verified: "2026-10-18",
+      tags: ["local", "food-security"]
+    }, {
+      title: "Neighbourhood Group Volunteer",
+      org: "The Neighbourhood Group Community Services",
+      tagline: "Youth programs, seniors, and settlement work.",
+      desc: "A large multi-service agency across Toronto running youth programming, seniors support and newcomer settlement. Several entry points, so say which you want.",
+      hours: "Varies",
+      link: "https://tngcommunityto.org/get-involved/volunteer",
+      applyLink: "https://tngcommunityto.org/get-involved/volunteer",
+      verified: "2026-10-18",
+      tags: ["local", "youth-friendly"]
+    }]
+  },
   brantford: {
     education: [{
       title: "Library Volunteer",
@@ -3309,7 +3520,16 @@ const LOCAL_OPPS = {
 function localKeyFor(cityShort) {
   const c = String(cityShort || "").toLowerCase();
   if (!c) return "";
-  if (c.indexOf("brantford") >= 0 || c.indexOf("brant") >= 0) return "brantford";
+  /* Longest and most specific first. "hamilton" would otherwise swallow
+     "hamilton / burlington" style labels, and a student in Burlington being
+     handed Hamilton hospitals is the same failure as the Kamloops one. */
+  if (c.indexOf("brantford") >= 0 || c.indexOf("brant county") >= 0) return "brantford";
+  if (c.indexOf("burlington") >= 0) return "burlington";
+  if (c.indexOf("mississauga") >= 0) return "mississauga";
+  if (c.indexOf("hamilton") >= 0) return "hamilton";
+  if (c.indexOf("toronto") >= 0 || c.indexOf("scarborough") >= 0 ||
+      c.indexOf("north york") >= 0 || c.indexOf("etobicoke") >= 0 ||
+      c.indexOf("east york") >= 0) return "toronto";
   return "";
 }
 
@@ -5369,6 +5589,8 @@ function ChoiceBtn({
 }) {
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
     className: `choice${selected ? " chosen" : ""}`,
+    type: "button",
+    "aria-pressed": !!selected,
     onClick: onClick
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -5385,7 +5607,7 @@ function ChoiceBtn({
       alignItems: "center",
       justifyContent: "center",
       flexShrink: 0,
-      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+      transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s"
     }
   }, selected &&
   /*#__PURE__*/
@@ -6850,7 +7072,7 @@ function ResultCardBase({
       borderRadius: 9,
       background: "var(--surface-up)",
       border: "1px solid var(--ink-5)",
-      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+      transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s"
     },
     onMouseEnter: e => {
       e.currentTarget.style.borderColor = "var(--fire)";
@@ -6991,7 +7213,7 @@ function ResultCardBase({
       border: "1.5px solid " + (isFav ? "var(--fire)" : "var(--ink-5)"),
       background: isFav ? "rgba(214,86,12,.08)" : "transparent",
       cursor: "pointer",
-      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+      transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s"
     }
   }, /*#__PURE__*/React.createElement(Heart, {
     size: 15,
@@ -7015,7 +7237,7 @@ function ResultCardBase({
       fontWeight: 600,
       color: "var(--ink-2)",
       fontFamily: "'DM Sans', sans-serif",
-      transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+      transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s"
     }
   }, copied ? "Copied!" : "Share")))), showApply && /*#__PURE__*/React.createElement(ApplyModal, {
     opp: opp,
@@ -7445,7 +7667,7 @@ function SignInModal({
       fontSize: 13,
       fontWeight: 600,
       color: "var(--ink)",
-      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s",
+      transition: "color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s",
       opacity: busy ? .6 : 1
     },
     onMouseEnter: e => e.currentTarget.style.borderColor = "var(--ink-4)",
@@ -7575,7 +7797,7 @@ function AuthButton({
         fontSize: 12,
         fontWeight: 600,
         color: "var(--ink-2)",
-        transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+        transition: "color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s"
       },
       onMouseEnter: e => {
         e.currentTarget.style.borderColor = "var(--fire)";
@@ -7617,7 +7839,7 @@ function AuthButton({
       background: "var(--ember)",
       cursor: "pointer",
       fontFamily: "inherit",
-      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+      transition: "color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s"
     },
     onMouseEnter: e => {
       e.currentTarget.style.borderColor = "var(--fire)";
@@ -7772,7 +7994,7 @@ function Nav({
       borderRadius: 7,
       cursor: "pointer",
       color: page === "settings" ? "var(--fire)" : "var(--ink-3)",
-      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+      transition: "color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s"
     }
   }, /*#__PURE__*/React.createElement(Settings, {
     size: 14
@@ -9567,7 +9789,7 @@ function MatcherPage({
         border: `1px solid ${sel ? "var(--fire)" : "var(--ink-5)"}`,
         borderRadius: 13,
         cursor: "pointer",
-        transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s",
+        transition: "color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s",
         display: "flex",
         flexDirection: "column",
         gap: 8,
@@ -9994,7 +10216,7 @@ function MatcherPage({
         fontWeight: on ? 700 : 500,
         cursor: "pointer",
         fontFamily: "'DM Sans', sans-serif",
-        transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+        transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s"
       }
     }, o.label);
   }))),
@@ -10045,7 +10267,7 @@ function MatcherPage({
         fontWeight: on ? 700 : 500,
         cursor: "pointer",
         fontFamily: "'DM Sans', sans-serif",
-        transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s"
+        transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s"
       }
     }, o.label);
   }))), /*#__PURE__*/React.createElement("div", {
@@ -10550,7 +10772,7 @@ function SDGBadge({
     viewBox: "0 0 100 100",
     style: {
       filter: on ? "drop-shadow(0 3px 8px rgba(0,0,0,.14))" : "none",
-      transition: "color ..3s, background-color ..3s, border-color ..3s, box-shadow ..3s, transform ..3s, opacity ..3s"
+      transition: "color .3s, background-color .3s, border-color .3s, box-shadow .3s, transform .3s, opacity .3s"
     }
   }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
     id: `g-${badge.id}`,
@@ -11276,7 +11498,7 @@ function HoursPage() {
       fontFamily: "'DM Sans',sans-serif",
       background: tab === id ? "var(--fire)" : "transparent",
       color: tab === id ? "#fff" : "var(--ink-2)",
-      transition: "color ..18s, background-color ..18s, border-color ..18s, box-shadow ..18s, transform ..18s, opacity ..18s"
+      transition: "color .18s, background-color .18s, border-color .18s, box-shadow .18s, transform .18s, opacity .18s"
     }
   }, label))), tab === "applications" && /*#__PURE__*/React.createElement(MyApplications, null), tab === "dashboard" &&
   /*#__PURE__*/
@@ -12429,7 +12651,7 @@ function SettingsPage({
         fontWeight: 700,
         cursor: "pointer",
         fontFamily: "'DM Sans',sans-serif",
-        transition: "color ..15s, background-color ..15s, border-color ..15s, box-shadow ..15s, transform ..15s, opacity ..15s",
+        transition: "color .15s, background-color .15s, border-color .15s, box-shadow .15s, transform .15s, opacity .15s",
         lineHeight: 1
       }
     }, "A")))
@@ -15457,7 +15679,7 @@ function ProfilePage({
         fontFamily: "'DM Sans',sans-serif",
         fontSize: 13,
         fontWeight: 600,
-        transition: "color ..16s, background-color ..16s, border-color ..16s, box-shadow ..16s, transform ..16s, opacity ..16s",
+        transition: "color .16s, background-color .16s, border-color .16s, box-shadow .16s, transform .16s, opacity .16s",
         border: "1.5px solid " + (on ? "var(--fire)" : "var(--ink-5)"),
         background: on ? "var(--ember)" : "var(--surface)",
         color: on ? "var(--fire)" : "var(--ink-2)"
@@ -15659,7 +15881,7 @@ function ProfilePage({
       fontSize: 13,
       fontWeight: 700,
       color: "var(--ink-2)",
-      transition: "color ..16s, background-color ..16s, border-color ..16s, box-shadow ..16s, transform ..16s, opacity ..16s"
+      transition: "color .16s, background-color .16s, border-color .16s, box-shadow .16s, transform .16s, opacity .16s"
     },
     onMouseEnter: e => {
       e.currentTarget.style.borderColor = "var(--danger)";
