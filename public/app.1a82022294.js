@@ -529,7 +529,34 @@ if (typeof window !== "undefined" && !window.riseCloud) {
           const to = setTimeout(() => finish(reject, new Error("Sign-in timed out - please try again.")), 180000);
         });
       },
-      async signInEmail(email, pw) {
+      /* Passwordless email, added at the school's request.
+
+     Their requirement was that students sign in with an account they already
+     have rather than "creating and managing a password on RISE". Google does
+     that for anyone with a Google account, which at a Workspace school is
+     everyone, but not every family has one and locking those students out
+     would be the wrong way to satisfy a safeguarding request.
+
+     A magic link is the honest second path: the student types their address,
+     Supabase emails a one-time link, and RISE never sees, stores, or has to
+     protect a password for a fourteen year old. The existing email and
+     password route stays only so accounts created before today still open.
+
+     shouldCreateUser is left on so a first-time student does not hit a dead
+     end; Supabase still sends a confirmation to the address either way. */
+  async signInMagicLink(email) {
+    const addr = (email || "").trim().toLowerCase();
+    if (!addr || addr.indexOf("@") < 1) throw new Error("Enter the email address you want the link sent to.");
+    const redirect = window.location.origin + window.location.pathname;
+    if (bridge) return call("signInMagicLink", { email: addr });
+    await authPost("/auth/v1/otp", {
+      email: addr,
+      create_user: true,
+      options: { email_redirect_to: redirect }
+    });
+  },
+
+  async signInEmail(email, pw) {
         // Supabase stores addresses lowercased. Without normalising here,
         // "Sam@x.com" fails to match an account created as "sam@x.com" and the
         // user is told their password is wrong.
@@ -1298,6 +1325,56 @@ React.createElement("style", null, `
     .choice:active { transform: translateY(0); }
     .choice.chosen { border-color: var(--fire); background: var(--ember); box-shadow: 0 0 0 3px rgba(214,86,12,.09); }
     .choice.chosen:hover { transform: translateY(-1px); }
+
+    /* ── Terms ─── */
+    .terms-page { max-width: 760px; }
+    .terms-head { margin-bottom: 34px; }
+    .terms-head h1 { font-size: 34px; font-weight: 400; color: var(--ink); letter-spacing: -.7px; margin: 10px 0 14px; }
+    .terms-lead { font-size: 15px; line-height: 1.8; color: var(--ink-2); }
+    .terms-sec { margin-bottom: 28px; }
+    .terms-sec h2 {
+      font-size: 15px; font-weight: 700; color: var(--ink);
+      margin-bottom: 9px; letter-spacing: -.1px;
+    }
+    .terms-sec p { font-size: 14px; line-height: 1.85; color: var(--ink-2); margin-bottom: 11px; }
+    .terms-foot {
+      font-size: 12.5px; line-height: 1.8; color: var(--ink-4);
+      border-top: 1px solid var(--ink-5); padding-top: 18px; margin-top: 8px;
+    }
+
+    /* The line students actually see, on every result, next to the button
+       they are about to press. A disclaimer only read by people who visit a
+       terms page is a disclaimer nobody reads. */
+    .safety-line {
+      font-size: 11px; line-height: 1.6; color: var(--ink-4);
+      margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--ink-6);
+    }
+    .safety-line a { color: var(--ink-3); text-decoration: underline; }
+    .safety-line a:hover { color: var(--fire); }
+
+    /* ── Passwordless sign-in ─── */
+    .magic-box { margin-bottom: 4px; }
+    .magic-box label {
+      display: block; font-size: 11px; font-weight: 700; color: var(--ink-3);
+      text-transform: uppercase; letter-spacing: .08em; margin-bottom: 7px;
+    }
+    .magic-row { display: flex; gap: 8px; }
+    .magic-row .input { flex: 1; min-width: 0; }
+    .magic-row .btn { white-space: nowrap; padding: 11px 15px; font-size: 13px; }
+    .magic-note { font-size: 11.5px; color: var(--ink-4); line-height: 1.55; margin-top: 8px; }
+
+    /* The old password route, closed by default: present for accounts made
+       before the change, never offered to anyone new. */
+    .legacy-auth { margin-top: 16px; border-top: 1px solid var(--ink-6); padding-top: 12px; }
+    .legacy-auth summary {
+      cursor: pointer; font-size: 11.5px; color: var(--ink-4); list-style: none;
+      padding: 2px 0; user-select: none;
+    }
+    .legacy-auth summary::-webkit-details-marker { display: none; }
+    .legacy-auth summary:hover { color: var(--fire); }
+    .legacy-auth summary::before { content: "+ "; font-weight: 700; }
+    .legacy-auth[open] summary::before { content: "- "; }
+    .legacy-auth[open] summary { margin-bottom: 12px; }
 
     /* ── Import panel ─── */
     .import-panel { padding: 18px; margin-bottom: 18px; animation: fadeUp .3s var(--ease) both; }
@@ -8083,7 +8160,44 @@ function SignInModal({
       height: 1,
       background: "var(--ink-6)"
     }
-  })), /*#__PURE__*/React.createElement("form", {
+  })),
+
+  /* Passwordless email, the second way in.
+     The school asked that students use an account they already have rather
+     than creating and managing a password on RISE. Google covers most of
+     them; this covers the rest without RISE ever holding a password for a
+     fourteen year old. */
+  /*#__PURE__*/React.createElement("div", { className: "magic-box" },
+    /*#__PURE__*/React.createElement("label", { htmlFor: "rise-magic-email" }, "Email me a sign-in link"),
+    /*#__PURE__*/React.createElement("div", { className: "magic-row" },
+      /*#__PURE__*/React.createElement("input", {
+        id: "rise-magic-email",
+        className: "input",
+        type: "email",
+        inputMode: "email",
+        autoComplete: "email",
+        placeholder: "you@school.ca",
+        value: email,
+        onChange: e => setEmail(e.target.value)
+      }),
+      /*#__PURE__*/React.createElement("button", {
+        type: "button",
+        className: "btn btn-fire",
+        disabled: busy || !email || email.indexOf("@") < 1,
+        onClick: () => run(async () => {
+          await window.riseCloud.signInMagicLink(email);
+          setNotice("Link sent. Check your email and open it on this device.");
+        })
+      }, busy ? "Sending…" : "Send link")),
+    /*#__PURE__*/React.createElement("p", { className: "magic-note" },
+      "No password to make up or forget. The link signs you in once and expires.")),
+
+  /* The old email and password route, kept only so accounts made before this
+     change still open. Closed by default so nobody is invited to create a
+     new password on RISE. */
+  /*#__PURE__*/React.createElement("details", { className: "legacy-auth" },
+    /*#__PURE__*/React.createElement("summary", null, "Used a password before?"),
+  /*#__PURE__*/React.createElement("form", {
     onSubmit: submit,
     noValidate: true
   }, /*#__PURE__*/React.createElement("div", {
@@ -8130,7 +8244,7 @@ function SignInModal({
       fontSize: 13,
       justifyContent: "center"
     }
-  }, busy ? "One moment…" : mode === "signin" ? "Sign In" : "Create Account")), /*#__PURE__*/React.createElement("p", {
+  }, busy ? "One moment…" : mode === "signin" ? "Sign In" : "Create Account"))), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "var(--ink-3)",
@@ -11680,6 +11794,142 @@ function ImportPanel({ imp, setImp, entries, save }) {
   );
 }
 
+/* ── TERMS AND CONDITIONS ─────────────────────────────────────────────────
+   Written at the request of Brantford's school leadership before they will
+   promote RISE. Their requirement, in their words: a clear section stating
+   that RISE is not responsible for any volunteer experience, that students
+   use the platform at their own discretion and risk, and that this applies
+   even to vetted organizations.
+
+   Two decisions about how this is written:
+
+   It is in plain English, because the people bound by it are fourteen. A
+   disclaimer a student cannot read is not a disclaimer, it is decoration, and
+   a court is not generous to terms written to be skipped.
+
+   It does not overclaim what RISE Verified means. The verification bar is
+   genuinely five items checked by a named human, and it is still not a
+   safeguarding guarantee, so this says both. Telling a parent that verified
+   means safe would be the single most dangerous sentence on the site.
+
+   NEITHER I NOR NEIL IS A LAWYER. This is a clear, honest statement of how
+   the platform actually works and what it does not promise. It is not legal
+   advice and has not been reviewed by anyone qualified. Before the school
+   promotes RISE widely, an adult with the relevant background should read it. */
+const TERMS_UPDATED = "30 October 2026";
+
+const TERMS_SECTIONS = [
+  {
+    h: "What RISE is",
+    p: [
+      "RISE helps students aged 14 to 18 in Canada find volunteer roles that suit what they can do, and keep a record of the hours they serve.",
+      "RISE is a signpost. We find opportunities, check links, and tell you what an organization says it requires. We are not an employer, an agency, a placement service, or a party to anything you agree with an organization."
+    ]
+  },
+  {
+    h: "We are not responsible for your volunteer experience",
+    p: [
+      "This is the most important section on this page, so it is in plain words.",
+      "Everything that happens during a volunteer role happens between you and that organization. RISE is not responsible for it. That includes how you are treated, how you are supervised, whether the role matches its description, whether the organization keeps its commitments, anything you are asked to do, anything that happens to you or to your belongings, and any injury, loss, cost or harm of any kind.",
+      "You use RISE at your own discretion and at your own risk. If something about a role feels wrong, you are never obliged to continue, and you should tell a trusted adult."
+    ]
+  },
+  {
+    h: "This applies to verified organizations too",
+    p: [
+      "RISE Verified means a named person checked five specific things before an organization's postings were published: that automated checks passed, that it is a real registered entity, that it plausibly works with young people and is not inappropriate, that it has stated in writing that anyone who would contact minors is screened according to its local requirements, and that a named human approved it.",
+      "That is a real check, and it is deliberately more than most sites do. It is still not a guarantee of your safety.",
+      "A verification is a snapshot of what could be confirmed on one day. It cannot tell you how a particular person will behave, whether an organization keeps doing what it said, or whether something will go wrong. The section above applies in full to verified organizations. Do not treat the seal as permission to skip your own judgement, or your family's."
+    ]
+  },
+  {
+    h: "Talk to a parent or guardian",
+    p: [
+      "If you are under 18, speak to a parent, guardian or teacher before you start a volunteer role. Many organizations require their consent anyway.",
+      "Tell someone where you are going, who you are meeting, and when you expect to be back. Meet at the organization's own premises during its normal hours. RISE does not arrange private meetings and never will."
+    ]
+  },
+  {
+    h: "Check things for yourself",
+    p: [
+      "We show the minimum age and screening requirements an organization states on its own pages, read on the date shown on each result. Organizations change their rules without telling anyone, and pages go out of date.",
+      "Confirm the details with the organization before you rely on them. If what you find differs from what RISE showed you, the organization is right and we are wrong."
+    ]
+  },
+  {
+    h: "Your hours record is yours",
+    p: [
+      "The hours you log are stored on your device, and in your account if you choose to sign in so they follow you between devices. They are your personal record.",
+      "RISE does not verify your hours and does not claim to. Your school decides what it accepts, and a record kept here is not a substitute for whatever your school requires."
+    ]
+  },
+  {
+    h: "What we collect, and what we do not",
+    p: [
+      "We ask for as little as we can. A first name for personalisation, where you are, what you are interested in, and what you can do. If you sign in, your email address.",
+      "We do not ask for your date of birth, your home address, your school, or a photograph. If you tell us your age it stays on your device and is used only to show which roles you can apply to.",
+      "Organizations never see your full name. An application shows your first name and last initial, the answers you chose to give, your availability, and a yes or no on whether you have accessibility needs. No email address, no date of birth, no home location."
+    ]
+  },
+  {
+    h: "No private messaging",
+    p: [
+      "There is no private, free-form messaging between an organization and a student on RISE, and there will not be. Every contact is either a structured form or a meeting arranged at the organization's own premises.",
+      "If anyone asks you to move a conversation somewhere private, that is a reason to stop and tell an adult."
+    ]
+  },
+  {
+    h: "Using RISE fairly",
+    p: [
+      "Do not log hours you did not serve, apply on behalf of someone else, or misrepresent who you are to an organization. A volunteer record only means something if it is true.",
+      "Do not attempt to break, overload or probe the platform. We can withdraw access from anyone using it to cause harm."
+    ]
+  },
+  {
+    h: "What we promise, and what we do not",
+    p: [
+      "RISE is run by two students and is free to use. We work hard to keep it accurate and available, and we cannot promise it will always be either.",
+      "To the fullest extent the law allows, RISE and its founders are not liable for any loss or damage arising from your use of the platform, from any volunteer role you find through it, or from any information on it being wrong or out of date.",
+      "Nothing here is intended to limit any right you have that cannot be limited by law, and some rights cannot be. If a court finds part of this unenforceable, the rest still stands."
+    ]
+  },
+  {
+    h: "Changes, and how to reach us",
+    p: [
+      "We will update these terms as the platform changes, and the date at the top always shows when they last changed. Continuing to use RISE after a change means you accept the current version.",
+      "Questions, corrections, or something that worries you: use the contact form on this site. If something is urgent and involves a young person's safety, contact your school or local authorities first, not us."
+    ]
+  }
+];
+
+
+/* The page itself. Deliberately plain: a wall of headings and paragraphs that
+   can be read top to bottom, rather than a styled document that looks like
+   something to scroll past. */
+function TermsPage() {
+  const h = React.createElement;
+  return h("div", { className: "page-wrap view-fade terms-page" },
+    h("div", { className: "terms-head" },
+      h("span", { className: "badge badge-neutral" }, "Last updated ", TERMS_UPDATED),
+      h("h1", { className: "serif" }, "Terms and conditions"),
+      h("p", { className: "terms-lead" },
+        "The short version: RISE helps you find volunteer roles and keep a record of your hours. ",
+        "What happens during a role is between you and that organization, not us, and that is true ",
+        "even for organizations we have verified.")
+    ),
+    TERMS_SECTIONS.map(function (sec, i) {
+      return h("section", { key: i, className: "terms-sec" },
+        h("h2", null, sec.h),
+        sec.p.map(function (para, j) { return h("p", { key: j }, para); })
+      );
+    }),
+    h("p", { className: "terms-foot" },
+      "RISE is built and run by Neil and Rayan Mekouar. These terms are written in plain ",
+      "English on purpose, because the people they apply to are fourteen to eighteen. ",
+      "They are not legal advice.")
+  );
+}
+
 function HoursPage() {
   const [studentName, setStudentName] = useStorage("rise_studentname", "", true);
   const [provId, setProvId] = useStorage("rise_prov", "on", true);
@@ -11744,7 +11994,19 @@ function HoursPage() {
     const h = Number(f.hours);
     if (!h || h <= 0 || h > 24) return setErr("Enter valid hours (0.5–24).");
     if (f.desc.trim().length < 10) return setErr("Describe what you did (min 10 chars).");
-    if (!f.supervisor.includes("@")) return setErr("Enter a valid supervisor email.");
+    /* The supervisor contact used to be required, and had to be an email.
+     Removed at the school's request, and they were right to ask.
+
+     It was the only field on this form collecting a THIRD PARTY's personal
+     data: an adult's email address, gathered from a minor, about someone who
+     never agreed to be entered into anything. An hours log does not need it.
+     The student knows who supervised them, and a school verifying hours
+     contacts the organization through its own channels, not through a
+     teenager's phone.
+
+     The field survives as an optional name, because a reference letter is
+     easier to ask for when you remember who to ask. Nothing validates it,
+     nothing requires it, and it never leaves the device. */
     save([{
       id: `h-${Date.now()}`,
       project: proj,
@@ -12606,10 +12868,12 @@ function HoursPage() {
       letterSpacing: ".09em",
       marginBottom: 5
     }
-  }, "Supervisor Email"), /*#__PURE__*/React.createElement("input", {
+  }, "Supervisor name (optional)"), /*#__PURE__*/React.createElement("input", {
     className: "field",
-    type: "email",
-    placeholder: "supervisor@organization.ca",
+    type: "text",
+    maxLength: 60,
+    "aria-label": "Supervisor name, optional, kept on your device for your own reference",
+    placeholder: "Who supervised you? For your reference only",
     value: f.supervisor,
     onChange: e => setF(p => ({
       ...p,
@@ -13540,7 +13804,7 @@ function Footer({
       rowGap: 10,
       columnGap: 20
     }
-  }, [["home", "Home"], ["match", "Find Matches"], ["hours", "Log Hours"], ...(favCount > 0 ? [["favorites", "Favorites"]] : []), ["about", "About"], ["settings", "Settings"]].map(([id, lbl]) =>
+  }, [["home", "Home"], ["match", "Find Matches"], ["hours", "Log Hours"], ...(favCount > 0 ? [["favorites", "Favorites"]] : []), ["about", "About"], ["terms", "Terms"], ["settings", "Settings"]].map(([id, lbl]) =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("span", {
@@ -16653,7 +16917,7 @@ function App() {
     }));
   }
 
-  const safePage = page === "favorites" ? favs.length ? "favorites" : "home" : ["home", "match", "hours", "settings", "about", "profile"].includes(page) ? page : "home";
+  const safePage = page === "favorites" ? favs.length ? "favorites" : "home" : ["home", "match", "hours", "settings", "about", "profile", "terms"].includes(page) ? page : "home";
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     "data-theme": settings.darkMode ? "dark" : "light",
     "data-contrast": settings.highContrast ? "high" : "normal",
@@ -16766,7 +17030,7 @@ function App() {
   }), safePage === "hours" &&
   /*#__PURE__*/
   /*#__PURE__*/
-  React.createElement(HoursPage, null), safePage === "about" &&
+  React.createElement(HoursPage, null), safePage === "terms" && /*#__PURE__*/React.createElement(TermsPage, null), safePage === "about" &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(AboutPage, {
