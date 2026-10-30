@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<!-- Tells browsers and extensions that this site handles both themes itself,
+     so nothing needs to invert it on our behalf. -->
+<meta name="color-scheme" content="light dark"/>
 <title>RISE: Volunteer Opportunities for Canadian Students 14-18</title>
 <link rel="canonical" href="https://rise4impact.org/"/>
 
@@ -97,6 +100,13 @@
       if (cfg && cfg.darkMode === true) {
         document.documentElement.setAttribute("data-theme", "dark");
         document.documentElement.style.colorScheme = "dark";
+        /* Set the Dark Reader lock here too, not just once React mounts.
+           The extension decides what to do with a page very early, so a lock
+           that arrives with the app is a lock that arrives too late: the
+           visitor sees one frame of double-darkened colours first. */
+        var lock = document.createElement("meta");
+        lock.name = "darkreader-lock";
+        document.head.appendChild(lock);
       }
     } catch (e) {}
 
@@ -134,6 +144,6 @@
     </div>
   </div>
 </div>
-<script src="/app.1a82022294.js"></script>
+<script src="/app.c6929c6a52.js"></script>
 </body>
 </html>

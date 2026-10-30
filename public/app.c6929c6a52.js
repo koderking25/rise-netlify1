@@ -999,8 +999,20 @@ React.createElement("style", null, `
 
       --ink:   #16110A;
       --ink-2: #4A3D31;
-      --ink-3: #857666;
-      --ink-4: #BEB0A4;
+      /* Darkened to meet WCAG AA against the light canvas. Measured with a
+         corrected contrast check: --ink-3 was 3.90 and --ink-4 was 1.87,
+         against a 4.5 requirement for text this size. --ink-4 in particular
+         is used for text 81 times against borders 4 times, so it is a text
+         colour, and at 1.87 it was genuinely hard to read.
+
+         That matters more here than on most sites: RISE offers "Blind and low
+         vision" as a community a student can choose to serve, and shipping
+         text its own users cannot read would be an odd way to mean it.
+
+         Hue and saturation are unchanged, only lightness, so the warm palette
+         is intact. Dark mode already passed at 7.98 and 4.54 and is untouched. */
+      --ink-3: #7A6C5E;
+      --ink-4: #7E6B5A;
       --ink-5: #E0D8CE;
       --ink-6: #EDE7E0;
 
@@ -6026,6 +6038,7 @@ function ChoiceBtn({
   children
 }) {
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: `choice${selected ? " chosen" : ""}`,
     type: "button",
     "aria-pressed": !!selected,
@@ -6331,7 +6344,8 @@ function SourceChips({
       key: i,
       href: s.uri,
       target: "_blank",
-      rel: "noopener noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noopener noreferrer",
       title: s.title || s.uri,
       style: {
         display: "inline-flex",
@@ -6444,6 +6458,7 @@ function OutreachModal({
       letterSpacing: "-.3px"
     }
   }, "Your first email"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: onClose,
     "aria-label": "Close",
     className: "btn btn-ghost",
@@ -6493,6 +6508,7 @@ function OutreachModal({
       marginBottom: 12
     }
   }, err), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: load,
     style: {
@@ -6530,7 +6546,8 @@ function OutreachModal({
     className: "btn btn-fire",
     href: gmailComposeUrl(to, parts.subject, parts.body),
     target: "_blank",
-    rel: "noopener noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noopener noreferrer",
     style: {
       padding: "10px 16px",
       fontSize: 12.5,
@@ -6547,6 +6564,7 @@ function OutreachModal({
       textDecoration: "none"
     }
   }, "Mail app"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: copy,
     style: {
@@ -6558,6 +6576,7 @@ function OutreachModal({
   }), " Copied") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Copy, {
     size: 13
   }), " Copy")), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: load,
     style: {
@@ -6674,6 +6693,7 @@ function ResultControls({
     children,
     disabled
   }) => /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: onClick,
     "aria-pressed": active,
     disabled: disabled,
@@ -6913,6 +6933,7 @@ function AIStatusNotice({
       lineHeight: 1.65
     }
   }, health.detail || "Live search is unavailable right now.", " ", "You're seeing the built-in library of real organizations instead — good places to start, but not tailored to what you specifically said.", quota && onOpenSettings ? /*#__PURE__*/React.createElement(React.Fragment, null, " ", /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: onOpenSettings,
     style: {
       background: "none",
@@ -6999,7 +7020,8 @@ function AIKeyModal({
   }, /*#__PURE__*/React.createElement("li", null, "Open ", /*#__PURE__*/React.createElement("a", {
     href: "https://aistudio.google.com/apikey",
     target: "_blank",
-    rel: "noopener noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noopener noreferrer",
     style: {
       color: "var(--fire)",
       fontWeight: 600
@@ -7030,6 +7052,7 @@ function AIKeyModal({
       flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     style: {
       padding: "10px 18px",
@@ -7041,6 +7064,7 @@ function AIKeyModal({
       onClose();
     }
   }, "Save and retry"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     style: {
       padding: "10px 18px",
@@ -7048,6 +7072,7 @@ function AIKeyModal({
     },
     onClick: onClose
   }, "Not now"), k && /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     style: {
       padding: "10px 18px",
@@ -7385,6 +7410,7 @@ function ResultCardBase({
       marginBottom: 16
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => setShowWhy(v => !v),
     "aria-expanded": showWhy,
     style: {
@@ -7499,7 +7525,8 @@ function ResultCardBase({
   React.createElement("a", {
     href: emailGmailHref(),
     target: "_blank",
-    rel: "noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noreferrer",
     className: "press",
     style: {
       display: "flex",
@@ -7582,7 +7609,8 @@ function ResultCardBase({
   /*#__PURE__*/React.createElement("a", {
     href: opp.applyLink || opp.link,
     target: "_blank",
-    rel: "noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noreferrer",
     style: {
       display: "inline-flex",
       alignItems: "center",
@@ -7646,6 +7674,7 @@ function ResultCardBase({
      student is dealing with them directly and RISE is not implying it
      vouched for anyone. */
   opp._riseVerified && /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => setShowApply(true),
     className: "btn btn-fire",
     style: {
@@ -7661,6 +7690,7 @@ function ResultCardBase({
       gap: 8
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => onFav(opp),
     "aria-label": isFav ? "Remove from favorites" : "Save to favorites",
     "aria-pressed": isFav,
@@ -7682,6 +7712,7 @@ function ResultCardBase({
     color: isFav ? "var(--fire)" : "var(--ink-3)",
     fill: isFav ? "var(--fire)" : "none"
   })), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: share,
     "aria-label": "Share this opportunity",
     title: "Share",
@@ -7842,6 +7873,7 @@ function FavoritesPage({
       size: 11,
       color: "var(--ink-4)"
     }), opp.hours))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
       onClick: () => toggleFav(opp),
       "aria-label": "Remove from favorites",
       title: "Remove",
@@ -7868,7 +7900,8 @@ function FavoritesPage({
     }, /*#__PURE__*/React.createElement("a", {
       href: opp.link,
       target: "_blank",
-      rel: "noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noreferrer",
       style: {
         display: "inline-flex",
         alignItems: "center",
@@ -7885,6 +7918,7 @@ function FavoritesPage({
       size: 11
     }))));
   }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: () => go("match"),
     style: {
@@ -8033,6 +8067,7 @@ function SignInModal({
       position: "relative"
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: onClose,
     "aria-label": "Close",
     style: {
@@ -8284,6 +8319,7 @@ function AuthButton({
         gap: 7
       }
     }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
       onClick: openModal,
       className: "press",
       style: {
@@ -8307,6 +8343,7 @@ function AuthButton({
         e.currentTarget.style.color = "var(--ink-2)";
       }
     }, "Log in"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
       onClick: openSignup,
       className: "btn btn-fire press",
       style: {
@@ -8324,6 +8361,7 @@ function AuthButton({
     },
     onClick: e => e.stopPropagation()
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => setPage("profile"),
     "aria-label": "Your profile",
     title: "Your profile",
@@ -8465,6 +8503,7 @@ function Nav({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     key: id,
     className: `nav-link${page === id ? " active" : ""}`,
     onClick: () => setPage(id)
@@ -8480,6 +8519,7 @@ function Nav({
     openSignup: openSignup,
     setPage: setPage
   }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => setPage("settings"),
     "aria-label": "Settings",
     style: {
@@ -8562,6 +8602,7 @@ function HomePage({
       marginBottom: 28
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: () => setPage("match"),
     style: {
@@ -8571,6 +8612,7 @@ function HomePage({
   }, "Find my match ", /*#__PURE__*/React.createElement(ArrowRight, {
     size: 14
   })), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: () => setPage("hours"),
     style: {
@@ -9099,6 +9141,7 @@ function HomePage({
       maxWidth: 440
     }
   }, "RISE was founded by twin brothers Neil and Rayan Mekouar to make community service feel like an extension of who a student already is - not a box to grudgingly tick."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => setPage("about"),
     style: {
       display: "inline-flex",
@@ -9195,7 +9238,8 @@ function HomePage({
   }, "Lead your own projects, represent RISE in your school, and build real leadership experience - no prior experience needed."), /*#__PURE__*/React.createElement("a", {
     href: "https://docs.google.com/forms/d/e/1FAIpQLSeDVY26ZW9CBGieE4bACfIBYlK61O6s_0KI6HxdCU0lpIP62Q/viewform?usp=sharing&ouid=117285547351667389810",
     target: "_blank",
-    rel: "noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noreferrer",
     style: {
       display: "inline-flex",
       alignItems: "center",
@@ -10063,6 +10107,7 @@ function MatcherPage({
       marginTop: 24
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: onBack,
     style: {
@@ -10072,6 +10117,7 @@ function MatcherPage({
   }, /*#__PURE__*/React.createElement(ChevronLeft, {
     size: 13
   }), " Back"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: onNextFn || onNext,
     disabled: nextDisabled,
@@ -10198,6 +10244,7 @@ function MatcherPage({
       justifyContent: "flex-end"
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: () => go("location"),
     disabled: name.trim().length < 2,
@@ -10820,6 +10867,7 @@ function MatcherPage({
       alignItems: "center"
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: () => go("superpower"),
     style: {
@@ -10829,6 +10877,7 @@ function MatcherPage({
   }, /*#__PURE__*/React.createElement(ChevronLeft, {
     size: 13
   }), " Back"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: runSearch,
     disabled: !time || !vibe,
@@ -10977,6 +11026,7 @@ function MatcherPage({
   // Restored sessions have results but no wizard answers in state, so every
   // part of this line has to be optional or it renders "undefined · ·".
   [talLabels.length ? talLabels.join(", ") : tal?.label, loc?.label, isOnline ? "Real roles, ranked for you" : "Suggested matches"].filter(Boolean).join(" · "))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: () => {
       setResults([]);
@@ -11006,6 +11056,7 @@ function MatcherPage({
   // again, which is what people actually want when results feel stale.
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: runSearch,
     title: "Search the web again for this same profile",
@@ -11084,6 +11135,7 @@ function MatcherPage({
       marginBottom: 10
     }
   }, "No matches left with these filters — ", results.length, " were hidden."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => {
       setMinVerdict("all");
       setFormat("any");
@@ -11102,6 +11154,7 @@ function MatcherPage({
       lineHeight: 1.7
     }
   }, "Nothing meets that bar yet. Show ", /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => setMinVerdict("all"),
     style: {
       background: "none",
@@ -11153,6 +11206,7 @@ function MatcherPage({
       marginBottom: 10
     }
   }, moreError), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: loadMore,
     disabled: loadingMore,
@@ -11488,6 +11542,7 @@ function ImpactScoreCard({
       color: "var(--fire)"
     }
   }, "Impact Score"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: onInfo,
     "aria-label": "How the Impact Score works",
     "aria-expanded": !!showInfo,
@@ -12298,6 +12353,7 @@ function HoursPage() {
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     key: id,
     role: "tab",
     "aria-selected": tab === id,
@@ -12575,6 +12631,7 @@ function HoursPage() {
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     onClick: getRef,
     disabled: loadingRef,
     style: {
@@ -12635,6 +12692,7 @@ function HoursPage() {
       flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire press",
     onClick: () => setForm(!showForm),
     style: {
@@ -12658,6 +12716,7 @@ function HoursPage() {
      the moment they are staring at an empty ledger remembering they have
      twenty hours already recorded somewhere else. */
   /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost press",
     onClick: () => setImp(p => ({ ...p, open: !p.open })),
     style: { padding: "10px 18px", fontSize: 13 }
@@ -12665,6 +12724,7 @@ function HoursPage() {
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     onClick: exportPortfolio,
     style: {
@@ -12677,6 +12737,7 @@ function HoursPage() {
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: exportPDF,
     style: {
@@ -13033,6 +13094,7 @@ function HoursPage() {
       }
     }, o.label);
   })))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: submit,
     style: {
@@ -13189,6 +13251,7 @@ function HoursPage() {
     },
     title: e.status === "confirmed" ? "You marked this as confirmed by your supervisor" : e.status === "requested" ? "You've asked your supervisor to confirm it" : "Not yet sent for confirmation"
   }, e.status === "confirmed" ? "Confirmed" : e.status === "requested" ? "Awaiting reply" : "Not confirmed"))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => save(entries.filter(x => x.id !== e.id)),
     style: {
       background: "none",
@@ -13251,6 +13314,7 @@ function HoursPage() {
   // and the record tracks that they asked. It never flips itself.
   /*#__PURE__*/
   React.createElement("button", {
+    type: "button",
     onClick: () => requestConfirmation(e),
     style: {
       background: "none",
@@ -13263,6 +13327,7 @@ function HoursPage() {
       color: "var(--fire)"
     }
   }, e.status === "unconfirmed" || !e.status ? "Ask them to confirm" : "Ask again"), e.status && e.status !== "unconfirmed" ? /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => markConfirmed(e),
     style: {
       background: "none",
@@ -13398,6 +13463,7 @@ function SettingsPage({
     label: "Your own AI key",
     sub: aiKeySet ? "Live matching is using your personal key." : "RISE ships with a shared free key that usually runs out. A free key of your own takes a minute.",
     control: /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: aiKeySet ? "btn btn-ghost" : "btn btn-fire",
       onClick: () => setShowKey(true),
       style: {
@@ -13465,6 +13531,7 @@ function SettingsPage({
     /*#__PURE__*/
     /*#__PURE__*/
     React.createElement("button", {
+    type: "button",
       key: v,
       "aria-pressed": settings.fontSize === v,
       "aria-label": `Text size ${lbl}`,
@@ -14008,6 +14075,7 @@ function ApplyModal({
       marginBottom: 16
     }
   }, opp.org, " will see your application. You can check where it is up to, or withdraw it, from My Hours at any time."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     onClick: onClose
   }, "Done")) : /*#__PURE__*/React.createElement("form", {
@@ -14273,6 +14341,7 @@ function MyApplications() {
         color: "var(--ink-4)"
       }
     }, "Sent ", new Date(a.created_at).toLocaleDateString()), open && /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-ghost",
       disabled: busyId === a.id,
       style: {
@@ -14428,6 +14497,7 @@ function OrgSignupPage({
         lineHeight: 1.7
       }
     }, "If your project asks for email confirmation, check your inbox first, then sign in."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-fire",
       style: {
         marginTop: 18
@@ -14941,6 +15011,7 @@ function OrgAttestation({
       marginBottom: 10
     }
   }, "RISE students are 14 to 18. Before your organization can be verified, confirm in writing that anyone who would be in contact with a minor through your programme is screened according to the requirements that apply where you operate."), !open && /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     style: {
       fontSize: 12.5,
@@ -14973,6 +15044,7 @@ function OrgAttestation({
       gap: 9
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     disabled: !text.trim() || busy,
     style: {
@@ -14981,6 +15053,7 @@ function OrgAttestation({
     },
     onClick: submit
   }, busy ? "Recording…" : "I attest to this"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     style: {
       fontSize: 12.5,
@@ -15046,6 +15119,7 @@ function OrgOpportunities({
       color: "var(--ink)"
     }
   }, "Volunteer opportunities"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     style: {
       padding: "7px 14px",
@@ -15131,6 +15205,7 @@ function OrgOpportunities({
         flexWrap: "wrap"
       }
     }, o.status === "draft" && /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-ghost",
       style: {
         padding: "6px 12px",
@@ -15138,6 +15213,7 @@ function OrgOpportunities({
       },
       onClick: () => setEditing(o)
     }, "Edit"), o.status === "draft" && /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-fire",
       style: {
         padding: "6px 12px",
@@ -15145,6 +15221,7 @@ function OrgOpportunities({
       },
       onClick: () => act(window.riseCloud.submitOpportunity.bind(window.riseCloud), o.id)
     }, "Submit for review"), o.status === "submitted" && /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-ghost",
       style: {
         padding: "6px 12px",
@@ -15152,6 +15229,7 @@ function OrgOpportunities({
       },
       onClick: () => act(window.riseCloud.withdrawOpportunity.bind(window.riseCloud), o.id)
     }, "Withdraw to draft"), o.status === "draft" && /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-ghost",
       style: {
         padding: "6px 12px",
@@ -15304,6 +15382,7 @@ function OrgDashboard() {
   }), /*#__PURE__*/React.createElement(OrgOpportunities, {
     org: org
   })), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     style: {
       marginTop: 22
@@ -15385,6 +15464,7 @@ function ReviewPanel({
       color: "var(--ink)"
     }
   }, "Review ", org.name), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: onClose,
     "aria-label": "Close review",
     style: {
@@ -15407,6 +15487,7 @@ function ReviewPanel({
       lineHeight: 1.6
     }
   }, err), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     style: {
       marginBottom: 14,
@@ -15532,6 +15613,7 @@ function ReviewPanel({
       flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire",
     disabled: !!busy || !allTicked,
     style: {
@@ -15541,6 +15623,7 @@ function ReviewPanel({
     },
     onClick: () => decide("verified")
   }, busy === "verified" ? "Verifying…" : "Approve as RISE Verified"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     disabled: !!busy,
     style: {
@@ -15549,6 +15632,7 @@ function ReviewPanel({
     },
     onClick: () => decide("in_review")
   }, "Mark in review"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     disabled: !!busy,
     style: {
@@ -15700,6 +15784,7 @@ function AdminQueue() {
       marginBottom: 4
     }
   }, [["orgs", `Organizations (${orgs.length})`], ["opps", `Postings (${opps.length})`]].map(([id, lbl]) => /*#__PURE__*/React.createElement("button", {
+    type: "button",
     key: id,
     onClick: () => setTab(id),
     style: {
@@ -15762,6 +15847,7 @@ function AdminQueue() {
       color: "var(--ink-2)"
     }
   }, v))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-ghost",
     style: {
       marginTop: 10,
@@ -15805,6 +15891,7 @@ function AdminQueue() {
       lineHeight: 1.65
     }
   }, o.role_summary), (o.status === "submitted" || o.status === "published") && /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: o.status === "published" ? "btn btn-ghost" : "btn btn-fire",
     disabled: busyId === o.id,
     style: {
@@ -16212,7 +16299,8 @@ function AboutPage({
   }, h("a", {
     href: AMB,
     target: "_blank",
-    rel: "noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noreferrer",
     style: {
       display: "inline-flex",
       alignItems: "center",
@@ -16322,6 +16410,7 @@ function ProfilePage({
         lineHeight: 1.6
       }
     }, "Sign in to build your profile, save your interests, and get matches tuned to you."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
       className: "btn btn-fire press",
       onClick: openSignIn,
       style: {
@@ -16494,6 +16583,7 @@ function ProfilePage({
   }, PROFILE_INTERESTS.map(it => {
     const on = interests.includes(it.id);
     return /*#__PURE__*/React.createElement("button", {
+    type: "button",
       key: it.id,
       onClick: () => toggleInterest(it.id),
       className: "press",
@@ -16607,6 +16697,7 @@ function ProfilePage({
       marginBottom: 12
     }
   }, "No favourites yet. Tap the heart on any match to save it here."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
     className: "btn btn-fire press",
     onClick: () => go("match"),
     style: {
@@ -16653,7 +16744,8 @@ function ProfilePage({
   }, f.org)), f.link ? /*#__PURE__*/React.createElement("a", {
     href: f.link,
     target: "_blank",
-    rel: "noreferrer",
+    rel: "noreferrer noopener",
+     rel: "noreferrer",
     className: "press",
     style: {
       fontSize: 12,
@@ -16668,6 +16760,7 @@ function ProfilePage({
   }, "Visit ", /*#__PURE__*/React.createElement(ExternalLink, {
     size: 11
   })) : null, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => toggleFav(f),
     "aria-label": "Remove favourite",
     className: "press",
@@ -16692,6 +16785,7 @@ function ProfilePage({
       marginTop: 8
     }
   }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
     onClick: () => {
       window.riseCloud.signOut();
       go("home");
@@ -16851,6 +16945,36 @@ function App() {
     const de = document.documentElement;
     de.setAttribute("data-theme", settings.darkMode ? "dark" : "light");
     de.style.colorScheme = settings.darkMode ? "dark" : "light";
+
+    /* Dark Reader, and the reason RISE's dark mode looked wrong for people
+       who have it installed.
+
+       Dark Reader inverts a page's colours. On a site with no dark theme that
+       is a kindness; on one that already has one it runs a second darkening
+       pass over the first, which is what turns a considered palette into grey
+       mud with unreadable orange. Nothing in RISE's own CSS can fix that,
+       because the extension is operating above it.
+
+       The extension honours a lock: a <meta name="darkreader-lock"> tells it
+       to stand down. Rather than locking permanently, it is tied to our own
+       theme. In RISE's dark mode the lock is present and Dark Reader leaves
+       the deliberate palette alone. In light mode the lock is removed, so
+       somebody who installed Dark Reader precisely because they want every
+       site dark still gets what they asked for. Both kinds of user end up
+       with what they actually wanted. */
+    try {
+      const LOCK = "darkreader-lock";
+      let tag = document.querySelector('meta[name="' + LOCK + '"]');
+      if (settings.darkMode) {
+        if (!tag) {
+          tag = document.createElement("meta");
+          tag.name = LOCK;
+          document.head.appendChild(tag);
+        }
+      } else if (tag) {
+        tag.remove();
+      }
+    } catch (e) {/* a missing head is not worth breaking the theme over */}
   }, [settings.darkMode]);
   /* ── Organization routing ────────────────────────────────────────────
      Two ways in, both explicit, neither in the main navigation:
@@ -17120,6 +17244,7 @@ class RiseErrorBoundary extends React.Component {
           lineHeight: 1.6
         }
       }, "Please refresh the page. If this keeps happening, contact us at rise4impact.together@gmail.com - it helps if you mention what you clicked."), /*#__PURE__*/React.createElement("button", {
+    type: "button",
         onClick: () => window.location.reload(),
         style: {
           marginTop: 6,

@@ -91,7 +91,7 @@ strong{color:#D6560C}
    ───────────────────────────────────────────────────────────────── */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'sha256-3uOI/KEIhaMCvox6OrYxlCW0W/f+bzU8Fl5P65UXixM='",
+  "script-src 'self' 'sha256-3HM0ORZMmnUJ4Yyn/lQNHYKFvhQ/zU3oQCEibSInuPU='",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data:",
