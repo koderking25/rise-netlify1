@@ -377,8 +377,19 @@ const ANTHROPIC_VERSION = "2023-06-01";
    affordable is that the pass which uses them is cohort-cached: one run
    answers "what exists for music in Brantford" for every student who asks,
    and the personal work happens downstream on a few thousand tokens. */
-const MAX_SEARCHES_DEFAULT = 8;
-const MAX_FETCHES_DEFAULT = 14;
+/* Tuned from measurement rather than intuition. Each search or fetch is a
+   round trip on Anthropic's side taking fifteen to twenty-five seconds, so the
+   ceiling is really a time budget: ten tool calls is roughly four minutes.
+
+   Measured on a live Kamloops search, a city with no curated roles:
+     deep  (4 searches, 15 fetches) -> 2 results, 164s, $0.36
+     wide  (5 searches, 10 fetches) -> 10 results, 392s, $0.59
+     tuned (4 searches,  6 fetches) -> 10 results, 272s, $0.50
+
+   Depth bought nothing. The ceilings below leave room for a thorough run
+   without letting one organization swallow the budget. */
+const MAX_SEARCHES_DEFAULT = 5;
+const MAX_FETCHES_DEFAULT = 8;
 
 // Sonnet pricing per million tokens; web search billed per 1k requests.
 /* Sonnet 5 list price. These were Sonnet 4.6's numbers ($3/$15) and were never
@@ -459,20 +470,29 @@ async function readAnthropicStream(res) {
         break;
       case "content_block_start":
         msg.content[evt.index] = JSON.parse(JSON.stringify(evt.content_block || {}));
-        if (msg.content[evt.index].type === "tool_use") partialJson[evt.index] = "";
+        if (msg.content[evt.index].type === "tool_use") partialJson[evt.index] = [];
         break;
       case "content_block_delta": {
         const b = msg.content[evt.index]; const d = evt.delta || {};
         if (!b) break;
-        if (d.type === "text_delta") b.text = (b.text || "") + d.text;
-        else if (d.type === "thinking_delta") b.thinking = (b.thinking || "") + d.thinking;
-        else if (d.type === "input_json_delta") partialJson[evt.index] = (partialJson[evt.index] || "") + d.partial_json;
+        /* Collected as arrays and joined once at the end. Repeated string
+           concatenation across thousands of deltas is the other half of the
+           quadratic cost that produced the 1102. */
+        if (d.type === "text_delta") (b._t || (b._t = [])).push(d.text);
+        else if (d.type === "thinking_delta") (b._k || (b._k = [])).push(d.thinking);
+        else if (d.type === "input_json_delta") (partialJson[evt.index] || (partialJson[evt.index] = [])).push(d.partial_json);
         break;
       }
       case "content_block_stop": {
+        const b = msg.content[evt.index];
+        if (b) {
+          if (b._t) { b.text = b._t.join(""); delete b._t; }
+          if (b._k) { b.thinking = b._k.join(""); delete b._k; }
+        }
         const raw = partialJson[evt.index];
-        if (raw != null && msg.content[evt.index]) {
-          try { msg.content[evt.index].input = raw ? JSON.parse(raw) : {}; } catch (e) {}
+        if (raw != null && b) {
+          const joined = raw.join("");
+          try { b.input = joined ? JSON.parse(joined) : {}; } catch (e) {}
           delete partialJson[evt.index];
         }
         break;
@@ -486,14 +506,24 @@ async function readAnthropicStream(res) {
     }
   };
 
+  /* Split once per chunk and keep only the trailing partial line.
+     The first version did `buf.indexOf("\n")` then `buf = buf.slice(nl + 1)`
+     in a loop, which rewrites the whole remaining buffer on every line. On a
+     short answer that is invisible; on a deep search streaming tens of
+     thousands of events it is quadratic, and Cloudflare killed the request
+     with error 1102, worker exceeded resource limits, after 86 seconds of
+     real work. The student saw a failure and we paid for the tokens anyway.
+
+     This version does one split per chunk and never re-scans what it has
+     already handled. */
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
+    const lines = (buf + decoder.decode(value, { stream: true })).split("\n");
+    buf = lines.pop() || "";           // the last piece may be a partial line
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.charCodeAt(0) !== 100) continue;   // fast reject: not "data:"
       if (!line.startsWith("data:")) continue;
       const payload = line.slice(5).trim();
       if (!payload || payload === "[DONE]") continue;
@@ -501,6 +531,19 @@ async function readAnthropicStream(res) {
       handle(evt);
     }
   }
+  /* A stream cut short never sends the last content_block_stop, so flush any
+     blocks still holding their delta arrays rather than returning a block
+     whose text is undefined. */
+  msg.content.forEach(b => {
+    if (!b) return;
+    if (b._t) { b.text = b._t.join(""); delete b._t; }
+    if (b._k) { b.thinking = b._k.join(""); delete b._k; }
+  });
+  Object.keys(partialJson).forEach(i => {
+    const b = msg.content[i];
+    if (!b || b.input) return;
+    try { b.input = JSON.parse(partialJson[i].join("")); } catch (e) {}
+  });
   msg.content = msg.content.filter(Boolean);
   return msg;
 }

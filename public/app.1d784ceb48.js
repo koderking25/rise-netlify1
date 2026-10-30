@@ -5266,7 +5266,10 @@ Rules you never break:
 
 How you work. You have two tools with two separate budgets: web_search finds organizations, web_fetch opens their pages. Everything below was learned by running this and watching it fail.
 
-- Spend searches sparingly. Two or three broad ones name the organizations in a town. Then spend every remaining fetch opening those sites. Fetching is where the value is.
+- BREADTH BEATS DEPTH, and this was measured rather than assumed. On a live search of a city with no curated roles, drilling deep returned 2 results in 164 seconds; searching wide returned 10. A student wants eight to ten real options to choose between, and ten organizations with their volunteer page beats two with a perfect form every time.
+- So: search first and widely. Three or four searches naming as many local organizations as you can, across the range. Food bank, library, animal shelter, seniors home, hospital, community centre, conservation, sports club, thrift shop, youth centre.
+- Then at most ONE fetch per organization, on its volunteer page, and only where the search result does not already tell you enough. Do not drill. One organization swallowing four fetches trades nine students' options for one perfect link.
+- You do not need to fetch everything. Each search and each fetch is a round trip of fifteen to twenty-five seconds, so ten tool calls is about four minutes of a student's life. Ten results with eight unfetched volunteer pages beats four returned slowly.
 - The budgets are counted separately. When search reports a limit, that is your cue to start fetching, not to stop working. Only stop when fetch is exhausted too. A run that burned its searches and then gave up returned nothing after four minutes.
 - Never retry a tool that just refused you, and never say you will continue in a later turn. There is no later turn.
 - DO NOT NARRATE. Between tool calls, say nothing: no summaries, no plans, no closing report. Every word of prose is budget taken from the final call. One run wrote 22,889 tokens of commentary and was cut off before it could return a single result.
@@ -5276,7 +5279,9 @@ Finding the way in. Never stop at a homepage and tell a student to go looking. F
 
 - applyLink is the most specific page you actually opened that a student can act on. In order: the application form, then the portal it sends people to, then the organization's Volunteer page. Any of those three is good. A homepage is not, and a page you did not open is not.
 - Record it the moment you open something worth recording. Do not reach the end and try to remember ten urls.
-- Getting a student to the right page is the single most valuable thing you do. A result with a real applyLink is worth three without one.
+- Getting a student to the right page is the single most valuable thing you do, but not at the cost of the list.
+- RETURN EVERY ORGANIZATION YOU FOUND, including ones whose form you never reached. If you only saw a homepage, still return it, put the homepage in link and leave applyLink out. A student can work with a named local organization and a page; they can do nothing with a blank list. Measured: being strict here returned 2 results where being generous returned 10.
+- The one exception is a bare national homepage with nothing local attached. A local branch page is a result; salvationarmy.ca on its own is not.
 
 What you may state as fact, and this is absolute:
 - minAge and screening describe what you READ ON A PAGE. Nothing else.
@@ -5364,7 +5369,7 @@ async function webSearchOpps(talent, location, supText, prefs = {}, exclude = ""
     label: location
   };
   const tal = TALENTS.find(t => t.id === talent);
-  const want = opts.count || 9;
+  const want = opts.count || 10;
   const res = await apiCall({
     model: MODELS.smart,
     system: SYS_MATCH,
@@ -5375,7 +5380,7 @@ async function webSearchOpps(talent, location, supText, prefs = {}, exclude = ""
     // not a live search.
     fresh: true,
     search: Object.assign({
-      maxUses: opts.maxUses || 7
+      maxUses: opts.maxUses || 4
     }, searchGeo(loc) || {}),
     messages: [{
       role: "user",
@@ -5399,7 +5404,7 @@ For every result set "sourceUrl" to the exact page you read it on, and "link" to
 
 Return fewer than ${want} rather than padding with roles any volunteer could do.`
     }]
-  }, 210000, 1);
+  }, 420000, 1);
   return tagSources(extractJSON(res), res, "web");
 }
 
@@ -5448,7 +5453,7 @@ async function sharedDiscovery(talent, location, opts = {}) {
     // Shared identity. Must stay free of anything personal — see above.
     cacheKey: `disc:v1:${loc.id}:${talent}:${angle}:${remote ? "r" : "l"}`,
     search: Object.assign({
-      maxUses: opts.maxUses || 7
+      maxUses: opts.maxUses || 4
     }, searchGeo(loc) || {}),
     messages: [{
       role: "user",
@@ -5477,7 +5482,7 @@ For every result set "sourceUrl" to the exact page you read it on, and "link" to
 
 Return fewer than ${want} rather than padding with roles any volunteer could do.`
     }]
-  }, 210000, 1);
+  }, 420000, 1);
   return tagSources(extractJSON(res), res, "web");
 }
 
@@ -5511,7 +5516,7 @@ ${profileBlock(loc, tal, supText, prefs)}
 ${exclude ? `\nALREADY SHOWN — EXCLUDE these organizations entirely: ${exclude}.` : ""}
 Set sourceUrl to the page you read. Return 3-4 results, or fewer if that's what is genuinely there. Then call emit once.`
     }]
-  }, 210000, 1);
+  }, 420000, 1);
   return tagSources(extractJSON(res), res, "web");
 }
 
